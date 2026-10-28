@@ -223,5 +223,35 @@ def push(
                f"({out['files']} files, {out['uploaded']} uploaded)")
 
 
+@app.command()
+@handle_errors
+def pull(
+    config: Path = typer.Argument(None, help="kb.yaml (or use --project and --registry)"),
+    branch: str = typer.Option(..., "--branch", "-b"),
+    project: str = typer.Option(None, "--project"),
+    registry: str = typer.Option(None, "--registry"),
+) -> None:
+    """Download an analysed branch (and everything shared on it) from the registry."""
+    from kb.config import load_config
+    from kb.errors import ConfigError
+    from kb.packs.store import PackStore
+    from kb.sync import client as sc
+    from kb.sync.commands import pull_pack
+
+    cfg = load_config(config) if config else None
+    name = cfg.project if cfg else project
+    if not name:
+        raise ConfigError("give a kb.yaml, or --project and --registry")
+    store = PackStore()
+    out = pull_pack(name, branch, store, sc.client_for(cfg, registry), cfg=cfg)
+    for w in out["warnings"]:
+        typer.echo(f"warning: {w}", err=True)
+    typer.echo(f"pulled {name}@{branch} version {out['version']}: {out['modules']} modules, "
+               f"{out['shared']} shared answers ({out['stale']} stale)")
+    if cfg is None:
+        typer.echo(f"project config saved to {store.kb_home / 'projects' / name / 'kb.yaml'} "
+                   "(add local_path for repos you have checked out)")
+
+
 def main() -> None:
     app()

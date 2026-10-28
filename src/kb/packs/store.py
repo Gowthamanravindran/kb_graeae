@@ -45,6 +45,17 @@ def _write_json(path: Path, data) -> None:
     tmp.replace(path)
 
 
+def check_unsafe_paths(pack_dir: Path, paths) -> None:
+    """Raise KbError unless every path is an allowed pack base path that stays inside pack_dir/base."""
+    from kb_registry.paths import is_allowed_path
+
+    base = (Path(pack_dir) / "base").resolve()
+    for rel in paths:
+        target = (Path(pack_dir) / rel).resolve()
+        if rel == "manifest.json" or not is_allowed_path(rel) or not target.is_relative_to(base):
+            raise KbError(f"unsafe path from registry: {rel!r}")
+
+
 class PackStore:
     def __init__(self, kb_home: Path | None = None) -> None:
         self.kb_home = Path(kb_home) if kb_home else default_kb_home()
@@ -70,6 +81,30 @@ class PackStore:
         })
         _write_json(base / "modules.json", [m.model_dump() for m in modules])
         (base / "system.md").write_text(system_md)
+        for sub in ("qa", "flows", "module_notes"):
+            (d / "overlay" / sub).mkdir(parents=True, exist_ok=True)
+        _write_json(d / "manifest.json", manifest.model_dump(mode="json"))
+        return d
+
+    def write_pulled_base(self, project: str, branch: str, manifest: Manifest, files: dict[str, bytes]) -> Path:
+        """Replace base/ with files from the registry; overlay/ is kept. Every path is checked first."""
+        from kb_registry.paths import is_allowed_path
+
+        d = self.pack_dir(project, branch)
+        check_unsafe_paths(d, files)
+        tmp, old = d / "base.tmp", d / "base.old"
+        for x in (tmp, old):
+            if x.exists():
+                shutil.rmtree(x)
+        for rel, data in files.items():
+            target = tmp / rel.removeprefix("base/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        if (d / "base").exists():
+            (d / "base").rename(old)
+        tmp.rename(d / "base")
+        if old.exists():
+            shutil.rmtree(old)
         for sub in ("qa", "flows", "module_notes"):
             (d / "overlay" / sub).mkdir(parents=True, exist_ok=True)
         _write_json(d / "manifest.json", manifest.model_dump(mode="json"))

@@ -71,3 +71,49 @@ def push_pack(cfg: ProjectConfig, branch: str, store: PackStore, client: Registr
     if not client.project(project).get("config_yaml"):
         client.put_config(project, seed_config_text(cfg), seed=True)
     return {"version": res["version"], "parent": res["parent"], "files": len(files), "uploaded": uploaded}
+
+
+def pull_pack(project: str, branch: str, store: PackStore, client: RegistryClient,
+              cfg: ProjectConfig | None = None) -> dict:
+    from kb.packs.index import build_index
+    from kb.packs.model import Manifest
+    from kb.packs.store import check_unsafe_paths
+    from kb.sync.pack_io import apply_overlay
+
+    flush_outbox(project, branch, client, store)
+    lt = client.latest(project, branch)
+    files_map: dict[str, str] = lt["files"]
+    check_unsafe_paths(store.pack_dir(project, branch), files_map)  # before downloading anything
+    cache = store.kb_home / "blobs"
+    cache.mkdir(parents=True, exist_ok=True)
+    files: dict[str, bytes] = {}
+    for rel, h in files_map.items():
+        cached = cache / h
+        if cached.is_file() and hashlib.sha256(cached.read_bytes()).hexdigest() == h:
+            files[rel] = cached.read_bytes()
+            continue
+        data = client.get_blob(h)
+        cached.write_bytes(data)
+        files[rel] = data
+    manifest = Manifest.model_validate(lt["manifest"])
+    store.write_pulled_base(project, branch, manifest, files)
+    _, warnings = apply_overlay(store, project, branch, lt["overlay"])
+
+    config_yaml = client.project(project).get("config_yaml", "")
+    if config_yaml:
+        dest = store.kb_home / "projects" / project / "kb.yaml"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(config_yaml)
+
+    if cfg is not None:
+        from kb.analyze import _mark_stale
+        from kb.ask import available_checkouts
+
+        checkouts, more = available_checkouts(cfg, branch, store, manifest.commits)
+        warnings += more
+        _mark_stale(store, project, branch, checkouts)
+    pack = store.load(project, branch)
+    build_index(pack.dir, pack)
+    return {"version": manifest.version, "modules": len(pack.modules),
+            "shared": sum(1 for q in pack.qa if q.visibility == "published"),
+            "stale": sum(1 for q in pack.qa if q.stale), "warnings": warnings}

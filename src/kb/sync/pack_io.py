@@ -16,3 +16,46 @@ def base_files(pack_dir: Path) -> dict[str, bytes]:
         if p.is_file() and rel != "manifest.json" and is_allowed_path(rel):
             out[rel] = p.read_bytes()
     return out
+
+
+def apply_overlay(store, project: str, branch: str, items: list[dict]) -> tuple[int, list[str]]:
+    """Write published items into the local overlay. A local *private* item with the same id and
+    different content is kept (yours wins) and reported. Returns (written, warnings)."""
+    from kb.packs.model import Flow, QAItem, Suggestion
+
+    pack = store.load(project, branch)
+    local_qa = {q.id: q for q in pack.qa}
+    local_flows = {f.id: f for f in pack.flows}
+    written, warnings = 0, []
+    notes: dict[str, tuple[str, str]] = {}
+    suggestions = []
+    for it in items:
+        kind, payload = it["kind"], it["payload"]
+        if kind in ("qa", "flow"):
+            model = QAItem if kind == "qa" else Flow
+            obj = model.model_validate(payload)
+            mine = (local_qa if kind == "qa" else local_flows).get(obj.id)
+            if mine is not None and mine.visibility == "private":
+                if mine.model_dump(exclude={"visibility", "stale"}) != obj.model_dump(exclude={"visibility", "stale"}):
+                    warnings.append(f"kept your private {kind} {obj.id}; the registry has a different one")
+                    continue
+            if kind == "qa":
+                if mine is not None:
+                    obj = obj.model_copy(update={"stale": mine.stale})
+                store.save_qa(project, branch, obj)
+            else:
+                store.save_flow(project, branch, obj)
+            written += 1
+        elif kind == "suggestion":
+            suggestions.append(Suggestion.model_validate(payload))
+        elif kind == "module_note":
+            prev = notes.get(payload["module_id"])
+            if prev is None or it.get("published_at", "") >= prev[0]:
+                notes[payload["module_id"]] = (it.get("published_at", ""), payload["text"])
+    if suggestions:
+        store.add_suggestions(project, branch, suggestions)
+        written += len(suggestions)
+    for module_id, (_, text) in notes.items():
+        store.save_module_note(project, branch, module_id, text)
+        written += 1
+    return written, warnings
