@@ -1,25 +1,38 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "./api/client";
-import type { ProjectRow } from "./api/types";
 import { EngineError } from "./components/EngineError";
+import { Sidebar } from "./components/Sidebar";
+import { AppProvider, useApp } from "./state";
+import { Library } from "./views/Library";
+
+function Placeholder({ title }: { title: string }) {
+  return <h1 className="text-[26px] font-bold">{title}</h1>;
+}
+
+function Main() {
+  const { view } = useApp();
+  return (
+    <div className="flex h-full">
+      <Sidebar />
+      <main className="min-w-0 flex-1 overflow-y-auto px-10 py-8">
+        {view === "library" && <Library />}
+        {view === "map" && <Placeholder title="Map" />}
+        {view === "ask" && <Placeholder title="Ask" />}
+        {view === "memory" && <Placeholder title="Memory" />}
+      </main>
+    </div>
+  );
+}
 
 export default function App() {
   const api = useMemo(() => createClient({ baseUrl: window.kb?.baseUrl ?? "", token: window.kb?.token ?? "" }), []);
   const [engine, setEngine] = useState<{ ok: boolean; message?: string; log?: string } | null>(null);
-  const [projects, setProjects] = useState<ProjectRow[]>([]);
   useEffect(() => {
     if (location.hash === "#engine-error" && window.kb) void window.kb.engineStatus().then(setEngine);
-    else {
-      setEngine({ ok: true });
-      void api.projects().then(setProjects).catch(() => setProjects([]));
-    }
-  }, [api]);
-  if (engine && !engine.ok)
+    else setEngine({ ok: true });
+  }, []);
+  if (!engine) return null;
+  if (!engine.ok)
     return <EngineError message={engine.message ?? "unknown error"} log={engine.log ?? ""} onRetry={() => void window.kb?.retryEngine()} onOpenLogs={() => void window.kb?.openLogs()} />;
-  return (
-    <main className="p-10">
-      <h1 className="text-2xl font-bold">Library</h1>
-      <ul>{projects.map((p) => <li key={p.name}>{p.name}</li>)}</ul>
-    </main>
-  );
+  return <AppProvider api={api}><Main /></AppProvider>;
 }
