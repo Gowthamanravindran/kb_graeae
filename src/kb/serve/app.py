@@ -98,6 +98,16 @@ class AskIn(BaseModel):
     no_reuse: bool = False
 
 
+class PublishIn(BaseModel):
+    qa_ids: list[str] = []
+    notes: bool = False
+
+
+class FeedbackIn(BaseModel):
+    trace_id: str
+    value: int
+
+
 class PullIn(BaseModel):
     force: bool = False
 
@@ -255,6 +265,86 @@ def create_app(settings: ServeSettings) -> FastAPI:
             rep.step("Downloading the analysis", 0.2)
             return pull_pack(cfg.project, branch, settings.store(), settings.client(cfg), cfg=cfg, force=body.force)
         return {"job_id": submit_or_409(jobs, "pull", run, key=f"pull:{cfg.project}@{branch}").id}
+
+    # ---------- map, memory, publish, retrace, feedback ----------
+
+    @app.get("/api/projects/{name}/branches/{branch:path}/map")
+    def map_(name: str, branch: str) -> dict:
+        from kb.serve.views import map_view
+
+        cfg = ws.config(name)
+        return map_view(cfg, settings.store().load(cfg.project, branch))
+
+    @app.get("/api/projects/{name}/branches/{branch:path}/memory")
+    def memory(name: str, branch: str) -> dict:
+        from kb.serve.views import memory_view
+        from kb.sync.outbox import Outbox
+
+        cfg = ws.config(name)
+        queued = {i["id"] for i in Outbox(settings.kb_home).pending(cfg.project, branch)}
+        return memory_view(settings.store().load(cfg.project, branch), queued)
+
+    def _qa(cfg, branch: str, qa_id: str):
+        pack = settings.store().load(cfg.project, branch)
+        qa = next((q for q in pack.qa if q.id == qa_id), None)
+        if qa is None:
+            raise HTTPException(404, f"no saved answer {qa_id}")
+        flow = next((f for f in pack.flows if f.id == qa.flow_id), None)
+        return pack, qa, flow
+
+    @app.get("/api/projects/{name}/branches/{branch:path}/qa/{qa_id}")
+    def open_qa(name: str, branch: str, qa_id: str) -> dict:
+        _, qa, flow = _qa(ws.config(name), branch, qa_id)
+        return {**qa.model_dump(mode="json"), "flow": flow.model_dump(mode="json") if flow else None}
+
+    @app.post("/api/projects/{name}/branches/{branch:path}/qa/{qa_id}/retrace")
+    def retrace(name: str, branch: str, qa_id: str) -> dict:
+        cfg = ws.config(name)
+        _, qa, _ = _qa(cfg, branch, qa_id)
+        return _ask_job(cfg, branch, qa.question, no_reuse=True)
+
+    @app.post("/api/projects/{name}/branches/{branch:path}/suggestions/{sid}/run")
+    def run_suggestion(name: str, branch: str, sid: str) -> dict:
+        cfg = ws.config(name)
+        pack = settings.store().load(cfg.project, branch)
+        sug = next((x for x in pack.suggestions if x.id == sid), None)
+        if sug is None:
+            raise HTTPException(404, f"no suggestion {sid}")
+        return _ask_job(cfg, branch, sug.question)
+
+    def _need_registry(cfg):
+        if not cfg.registry:
+            raise KbError(f"{cfg.project} has no registry: add `registry:` to its kb.yaml to share")
+
+    @app.post("/api/projects/{name}/branches/{branch:path}/publish")
+    def publish(name: str, branch: str, body: PublishIn) -> dict:
+        from kb.sync.commands import publish_items
+
+        cfg = ws.config(name)
+        _need_registry(cfg)
+        return publish_items(cfg, branch, settings.store(), settings.client(cfg), body.qa_ids, body.notes)
+
+    @app.post("/api/projects/{name}/branches/{branch:path}/sync")
+    def sync(name: str, branch: str) -> dict:
+        from kb.sync.commands import flush_outbox
+        from kb.sync.outbox import Outbox
+
+        cfg = ws.config(name)
+        _need_registry(cfg)
+        warnings: list[str] = []
+        sent = flush_outbox(cfg.project, branch, settings.client(cfg), settings.store(), warnings)
+        return {"sent": sent, "left": len(Outbox(settings.kb_home).pending(cfg.project, branch)), "warnings": warnings}
+
+    @app.post("/api/feedback")
+    def feedback(body: FeedbackIn) -> dict:
+        if not (os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY")):
+            return {"recorded": False}
+        from langfuse import Langfuse
+
+        lf = Langfuse()
+        lf.create_score(trace_id=body.trace_id, name="helpful", value=float(1 if body.value else 0))
+        lf.flush()
+        return {"recorded": True}
 
     @app.get("/api/jobs")
     def list_jobs(kind: str | None = None, active: int = 0) -> list[dict]:
