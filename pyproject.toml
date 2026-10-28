@@ -55,7 +55,7 @@ dev = [
     "uvicorn>=0.54.0",
 ]
 [tool.pytest.ini_options]
-pythonpath = ["tests", "tests/registry"]
+pythonpath = ["tests", "tests/registry", "tests/sync"]
 
 [tool.uv.build-backend]
 module-name = ["kb", "kb_registry"]

@@ -305,5 +305,44 @@ def sync(
     typer.echo(f"sent {sent} queued items" + (f"; {left} still queued (registry unreachable)" if left else ""))
 
 
+@app.command()
+def serve(
+    port: int = typer.Option(0, "--port", help="0 = any free port"),
+    kb_home: Path = typer.Option(None, "--kb-home"),
+) -> None:
+    """Run the local API for KB Desktop (127.0.0.1 only; needs KB_SERVE_TOKEN)."""
+    import json
+    import os
+    import sys
+    import threading
+    import time
+
+    import uvicorn
+
+    from kb.packs.store import default_kb_home
+    from kb.serve.app import ServeSettings, create_app
+
+    token = os.environ.get("KB_SERVE_TOKEN")
+    if not token:
+        typer.echo("KB_SERVE_TOKEN not set", err=True)
+        raise typer.Exit(2)
+    app_ = create_app(ServeSettings(kb_home=kb_home or default_kb_home(), token=token))
+    server = uvicorn.Server(uvicorn.Config(app_, host="127.0.0.1", port=port, log_level="warning"))
+
+    def announce() -> None:
+        while not server.started:
+            time.sleep(0.05)
+        bound = server.servers[0].sockets[0].getsockname()[1]
+        sys.stdout.write("KB_SERVE_READY " + json.dumps({"port": bound}) + "\n")
+        sys.stdout.flush()
+
+    threading.Thread(target=announce, daemon=True).start()
+    server.run()
+
+
 def main() -> None:
     app()
+
+
+if __name__ == "__main__":
+    main()
