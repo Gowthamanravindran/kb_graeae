@@ -1,0 +1,74 @@
+# On-prem kb-registry: registry + Postgres 16 + MinIO (S3-compatible storage).
+#   cp .env.example .env   # set the passwords
+#   docker compose up -d --build
+name: kb-registry
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: kb
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: kb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kb -d kb"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio:/data
+    ports:
+      - "9001:9001"   # MinIO console (optional)
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint:
+      - sh
+      - -c
+      - >
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do sleep 2; done;
+        mc mb --ignore-existing local/kb-packs
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+  registry:
+    build:
+      context: ../..
+      dockerfile: deploy/registry/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      KB_REGISTRY_DATABASE_URL: postgresql+psycopg://kb:${POSTGRES_PASSWORD}@postgres:5432/kb
+      KB_REGISTRY_STORAGE: s3://kb-packs
+      KB_REGISTRY_S3_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_DEFAULT_REGION: us-east-1
+      # Single sign-on (optional):
+      KB_REGISTRY_OIDC_ISSUER: ${KB_REGISTRY_OIDC_ISSUER:-}
+      KB_REGISTRY_OIDC_AUDIENCE: ${KB_REGISTRY_OIDC_AUDIENCE:-}
+      KB_REGISTRY_OIDC_CLIENT_ID: ${KB_REGISTRY_OIDC_CLIENT_ID:-}
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  minio:
