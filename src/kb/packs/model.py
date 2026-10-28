@@ -10,6 +10,13 @@ from pydantic import BaseModel, Field
 Visibility = Literal["private", "published"]
 
 
+def commits_key(commits: dict[str, str]) -> str:
+    """Identity of a set of repo commits (same value on client and registry)."""
+    import hashlib
+
+    return hashlib.sha256(repr(sorted(commits.items())).encode()).hexdigest()[:12]
+
+
 class Manifest(BaseModel):
     project: str
     branch: str

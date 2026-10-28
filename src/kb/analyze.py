@@ -21,7 +21,7 @@ from kb.llm.base import LLMProvider
 from kb.mapper.cluster import cluster_graph
 from kb.mapper.mapper import map_modules, write_system_overview
 from kb.packs.index import build_index
-from kb.packs.model import Manifest
+from kb.packs.model import Manifest, commits_key
 from kb.packs.staleness import is_stale
 from kb.packs.store import PackStore
 
@@ -48,7 +48,7 @@ def context_text(cfg: ProjectConfig, checkouts: dict[str, Checkout]) -> str:
 
 
 def _commits_key(commits: dict[str, str]) -> str:
-    return hashlib.sha256(repr(sorted(commits.items())).encode()).hexdigest()[:12]
+    return commits_key(commits)
 
 
 def run_analyze(cfg: ProjectConfig, branch: str, store: PackStore, provider: LLMProvider, tracer,
