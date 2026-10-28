@@ -222,3 +222,18 @@ def test_trace_prompt_asks_to_cite_graphql_operation_for_requests(tmp_path):
                 make_deps(store, cos, p))
     pr = p.requests[0].prompt
     assert "graphql_op" in pr and "cite the operation's definition" in pr
+
+
+def test_reuse_when_module_summary_outranks_the_saved_flow(tmp_path):
+    store, cos = build_pack(tmp_path)
+    from kb.packs.index import build_index
+
+    q = "How do admins schedule repeating tasks on the server queue?"
+    save_flow(store, cos, question=q)
+    flow = store.load("mini", "main").flows[0]
+    filler = [FlowStep(side="backend", text=f"Step {i} updates records, sends notifications and writes audit logs",
+                       verified=True) for i in range(12)]
+    store.save_flow("mini", "main", flow.model_copy(update={"steps": flow.steps + filler}))
+    build_index(store.pack_dir("mini", "main"), store.load("mini", "main"))
+    out = nodes.understand({"question": q}, make_deps(store, cos, FakeProvider()))
+    assert out["reused_flow_id"] == "f1"
