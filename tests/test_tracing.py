@@ -21,6 +21,7 @@ def test_make_tracer_noop_without_keys(monkeypatch):
 
 
 def test_make_tracer_noop_without_url(monkeypatch):
+    monkeypatch.delenv("LANGFUSE_HOST", raising=False)
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
     assert isinstance(make_tracer(cfg(None)), NoopTracer)
@@ -92,3 +93,19 @@ def test_ask_json_survives_fences_inside_strings(tmp_path):
     reply = '```json\n{"name": "uses ```ts\\nconst a = 1;\\n``` inside"}\n```'
     out = ask_json(FakeProvider([reply]), LLMRequest(prompt="q", system="s", cwd=tmp_path), Out, NoopTracer(), "x")
     assert out.name.startswith("uses")
+
+
+def test_make_tracer_uses_langfuse_host_when_kb_yaml_has_none(monkeypatch):
+    seen = {}
+
+    class FakeLangfuse:
+        def __init__(self, **kw):
+            seen.update(kw)
+
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://localhost:3100")
+    monkeypatch.setattr("kb.tracing.Langfuse", FakeLangfuse)
+    assert isinstance(make_tracer(cfg(None)), LangfuseTracer) and seen["host"] == "http://localhost:3100"
+    make_tracer(cfg("http://other:3000"))
+    assert seen["host"] == "http://other:3000"  # kb.yaml wins when it names one

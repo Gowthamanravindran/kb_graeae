@@ -144,6 +144,7 @@ class LangfuseTracer:
 
 
 def make_tracer(cfg: ProjectConfig) -> Tracer:
-    if cfg.langfuse and os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY") and Langfuse:
-        return LangfuseTracer(cfg.langfuse)
+    host = cfg.langfuse or os.environ.get("LANGFUSE_HOST")
+    if host and os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY") and Langfuse:
+        return LangfuseTracer(host)
     return NoopTracer()

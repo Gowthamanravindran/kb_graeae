@@ -32,6 +32,9 @@ def handle_errors(fn: Callable) -> Callable:
 @app.callback()
 def _root() -> None:
     """kb — analyse codebases into shareable knowledge packs."""
+    from kb.envfile import load_kb_env
+
+    load_kb_env()  # ~/.kb/kb.env (or $KB_HOME/kb.env): Langfuse keys etc.
 
 
 @app.command()
@@ -325,6 +328,9 @@ def serve(
     from kb.packs.store import default_kb_home
     from kb.serve.app import ServeSettings, create_app
 
+    from kb.envfile import load_kb_env
+
+    load_kb_env(kb_home)  # the desktop app passes --kb-home; its kb.env holds e.g. Langfuse keys
     token = os.environ.get("KB_SERVE_TOKEN")
     if not token:
         typer.echo("KB_SERVE_TOKEN not set", err=True)

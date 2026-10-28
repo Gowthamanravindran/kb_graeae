@@ -58,8 +58,8 @@ The builds are **unsigned** for now.
 
 Claude Code must be installed and signed in on the machine (`claude` once) to ask new questions.
 Without it the app still opens, browses maps and reads saved answers, and the Ask view explains what is missing.
-Langfuse is optional. Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_HOST` in the environment the app starts from
-(see `docs/langfuse-local.md`) to get "Open trace in Langfuse" and thumbs feedback.
+Langfuse is optional. Put `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_HOST` in `~/.kb/kb.env`
+(see `docs/langfuse-local.md`). That gives "Open trace in Langfuse" and thumbs feedback, even when the app is opened from Finder.
 
 If the engine fails to start, the app shows **KB engine didn't start** with the last lines of the log,
 a **Retry** button, and **Open logs** (`$KB_HOME/logs/`).
