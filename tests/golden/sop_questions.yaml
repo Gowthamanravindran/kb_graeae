@@ -1,0 +1,46 @@
+# Golden questions for the SOP repos. expect_files are "repo:path" (path relative to that repo's root).
+# A question passes when the share of expected files cited >= min_recall
+# and the share of verified steps >= min_verified_ratio.
+- question: How does scheduling work in Tasks?
+  min_recall: 1.0
+  min_verified_ratio: 0.75
+  expect_files:
+    - sop-web:src/sub-components/tasks/create-task/TaskCreation.tsx
+    - sop-web:src/sub-components/tasks/create-task/task.graphql.ts
+    - sop-backend:src/module/tasks/task/resolvers.ts
+    - sop-backend:src/queue/task/main.ts
+- question: How does a staff member complete a task?
+  expect_files:
+    - sop-web:src/pages/TasksDashboard/MyTasks/services/my-tasks.graphql.ts
+    - sop-backend:src/module/tasks/session/resolvers.ts
+- question: How is a new training path created?
+  expect_files:
+    - sop-web:src/sub-components/training-v2/create/components/training.graphql.ts
+    - sop-backend:src/module/tp/tp/resolvers.ts
+- question: How is an audit taken and submitted?
+  expect_files:
+    - sop-web:src/sub-components/audits/take-audit/take-audit.graphql.ts
+    - sop-backend:src/module/audits/auditSession/resolvers.ts
+- question: How is an audit scheduled?
+  expect_files:
+    - sop-web:src/sub-components/audits/schedule/audit-create.graphql.ts
+    - sop-backend:src/module/audits/audit/resolvers.ts
+- question: How does a location owner complete a launcher task?
+  expect_files:
+    - sop-web:src/sub-components/Launcher/location-owner/StatesDrawer/Subtasks/state-drawer.graphql.ts
+    - sop-backend:src/module/locationLaunchers/locationLaunch/resolvers.ts
+- question: How is a new location created with a launcher?
+  expect_files:
+    - sop-web:src/pages/LocationsNew/AddLocation/add-location.graphql.ts
+    - sop-backend:src/module/locationLaunchers/locationLaunch/resolvers.ts
+- question: How is a chapter's visibility changed?
+  expect_files:
+    - sop-web:src/sub-components/ChapterEditor/chapter-editor.graphql.ts
+    - sop-backend:src/module/sop/resolvers.ts
+- question: How are announcements created and sent?
+  expect_files:
+    - sop-web:src/sub-components/announcements/announcement.graphql.ts
+    - sop-backend:src/module/announcement/resolvers.ts
+- question: How is a new chapter created?
+  expect_files:
+    - sop-web:src/pages/Chapters/CreateChapterModal/create-chapter.graphql.ts
