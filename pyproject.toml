@@ -1,0 +1,33 @@
+[project]
+name = "kb"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Gowthaman", email = "gowthaman.work@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "claude-agent-sdk>=0.2.174",
+    "graphql-core>=3.3.1",
+    "langfuse>=5.0.4",
+    "langgraph>=1.2.18",
+    "networkx>=3.7",
+    "pydantic>=2.14.1",
+    "pyyaml>=6.0.3",
+    "tree-sitter>=0.26.0",
+    "tree-sitter-typescript>=0.23.2",
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+kb = "kb.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
