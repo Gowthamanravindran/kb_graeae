@@ -41,6 +41,7 @@ class ServeSettings:
     token: str
     provider_factory: Callable | None = None
     client_factory: Callable | None = None
+    ui_dir: Path | None = None
     _provider: object | None = field(default=None, repr=False)
     _claude: tuple[float, dict] | None = field(default=None, repr=False)
 
@@ -389,4 +390,8 @@ def create_app(settings: ServeSettings) -> FastAPI:
             return {"email": settings.client(registry=url).me()["email"]}
         return {"job_id": submit_or_409(jobs, "login", run, key=f"login:{url}").id}
 
+    if settings.ui_dir is not None:  # the desktop renderer, same origin as the API (no CORS needed)
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=str(settings.ui_dir), html=True), name="ui")
     return app

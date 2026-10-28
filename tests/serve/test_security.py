@@ -78,3 +78,17 @@ def test_serve_cli_requires_token(tmp_path):
     env = {k: v for k, v in os.environ.items() if k != "KB_SERVE_TOKEN"}
     r = subprocess.run([sys.executable, "-m", "kb.cli", "serve"], env=env, capture_output=True, text=True, timeout=30)
     assert r.returncode == 2 and "KB_SERVE_TOKEN not set" in r.stderr
+
+
+def test_ui_dir_served_same_origin_behind_token(tmp_path):
+    from kb.serve.app import ServeSettings, create_app
+
+    ui = tmp_path / "ui"
+    ui.mkdir()
+    (ui / "index.html").write_text("<h1>KB Desktop</h1>")
+    app = create_app(ServeSettings(kb_home=tmp_path, token=TOKEN, provider_factory=FakeProvider, ui_dir=ui))
+    c = TestClient(app, base_url="http://127.0.0.1:1")
+    assert c.get("/").status_code == 401  # pages need the token too (Electron injects it)
+    r = c.get("/", headers={"X-KB-Token": TOKEN})
+    assert r.status_code == 200 and "KB Desktop" in r.text
+    assert c.get("/api/status", headers={"X-KB-Token": TOKEN}).status_code == 200  # API still wins over static

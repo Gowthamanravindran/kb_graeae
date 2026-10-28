@@ -309,6 +309,7 @@ def sync(
 def serve(
     port: int = typer.Option(0, "--port", help="0 = any free port"),
     kb_home: Path = typer.Option(None, "--kb-home"),
+    ui_dir: Path = typer.Option(None, "--ui-dir", help="Serve the desktop renderer from this folder"),
 ) -> None:
     """Run the local API for KB Desktop (127.0.0.1 only; needs KB_SERVE_TOKEN)."""
     import json
@@ -326,7 +327,7 @@ def serve(
     if not token:
         typer.echo("KB_SERVE_TOKEN not set", err=True)
         raise typer.Exit(2)
-    app_ = create_app(ServeSettings(kb_home=kb_home or default_kb_home(), token=token))
+    app_ = create_app(ServeSettings(kb_home=kb_home or default_kb_home(), token=token, ui_dir=ui_dir))
     server = uvicorn.Server(uvicorn.Config(app_, host="127.0.0.1", port=port, log_level="warning"))
 
     def announce() -> None:
