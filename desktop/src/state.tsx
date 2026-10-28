@@ -17,6 +17,12 @@ interface Ctx extends UiState {
 }
 
 const AppCtx = createContext<Ctx | null>(null);
+
+/** Apply a patch; an Ask seed belongs to one project@branch, so switching either drops it. */
+function applyPatch(u: UiState, patch: Partial<UiState>): UiState {
+  const moved = ("project" in patch && patch.project !== u.project) || ("branch" in patch && patch.branch !== u.branch);
+  return { ...u, ...(moved && !("askSeed" in patch) ? { askSeed: null } : {}), ...patch };
+}
 const KEY = "kb.desktop.ui";
 
 function loadSaved(): Partial<UiState> {
@@ -50,8 +56,8 @@ export function AppProvider({ api, initial, children }: { api: Api; initial?: Pa
   const value = useMemo<Ctx>(() => ({
     ...ui, api, status, projects,
     current: projects.find((p) => p.name === ui.project) ?? null,
-    set: (patch) => setUi((u) => ({ ...u, ...patch })),
-    go: (view, patch = {}) => setUi((u) => ({ ...u, ...patch, view })),
+    set: (patch) => setUi((u) => applyPatch(u, patch)),
+    go: (view, patch = {}) => setUi((u) => ({ ...applyPatch(u, patch), view })),
     refresh,
   }), [ui, api, status, projects, refresh]);
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
