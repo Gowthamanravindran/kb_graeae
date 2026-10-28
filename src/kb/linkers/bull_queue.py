@@ -1,7 +1,9 @@
 """Link Bull queue producers (`xQueue.add(topic, ...)`) to consumers (`xQueue.process(topic, ...)`).
 
 Topic key = last segment of the first argument (`TaskTopics.TASK_REPEAT` -> `TASK_REPEAT`).
-Consumers registered with a variable topic cannot be matched and are recorded as unresolved.
+Consumers registered with a variable topic cannot be matched and are recorded as unresolved;
+consumers with an inline handler or a concurrency number are recorded as `<all-jobs>`.
+Only identifiers and string/member keys are ever stored, never argument source text.
 """
 
 from __future__ import annotations
@@ -9,6 +11,9 @@ from __future__ import annotations
 from kb.graph.model import CodeEdge, CodeNode
 from kb.linkers import ts
 from kb.linkers.base import LinkContext, ensure_file_node, ensure_node, register_linker
+
+
+ALL_JOBS = "<all-jobs>"
 
 
 def _is_queue(receiver: str) -> bool:
@@ -42,7 +47,9 @@ class BullQueueLinker:
                         bucket.setdefault(key, set()).add(rel)
                         first_seen.setdefault(key, (rel, c.line))
                     elif method == "process":
-                        dynamic.append((rel, c.first_arg))
+                        # identifier = topic held in a variable; anything else (inline handler,
+                        # concurrency number) means "all jobs on this queue". Never store the text.
+                        dynamic.append((rel, c.first_arg if c.first_arg_kind == "identifier" else ALL_JOBS))
 
         edges: list[CodeEdge] = []
 

@@ -59,6 +59,7 @@ def test_analyze_without_llm_saves_structure_and_marks_incomplete(setup):
     d = store.pack_dir("mini", "main")
     assert (d / "base" / "links.json").exists()
     assert json.loads((d / "manifest.json").read_text())["status"] == "incomplete"
+    assert (d / "index.sqlite").exists()  # questions can still find code by name
 
 
 def test_resume_completes_failed_modules(setup):

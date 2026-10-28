@@ -138,3 +138,78 @@ def test_no_source_mode(tmp_path):
     assert not p.requests[0].allow_tools and "no source" in p.requests[0].prompt.lower()
     assert out["answer"].startswith("No source verification —")
     assert all(not s.verified for s in out["steps"])
+
+
+def test_verify_rejects_paths_escaping_the_checkout_and_keeps_dotfiles(tmp_path):
+    from kb.ingest.checkout import Checkout
+
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / ".eslintrc.js").write_text("module.exports = {};\n")
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "secret.txt").write_text("s\n")
+    store, _ = build_pack(tmp_path)
+    d = make_deps(store, {"r": Checkout("r", root, "x")}, FakeProvider())
+    steps = nodes.verify({"draft_steps": [
+        {"side": "ui", "text": "escape", "repo": "r", "file": "src/../../outside/secret.txt", "line_start": 1, "line_end": 1},
+        {"side": "ui", "text": "dot", "repo": "r", "file": ".eslintrc.js", "line_start": 1, "line_end": 1},
+        {"side": "ui", "text": "dot2", "repo": "r", "file": "./.eslintrc.js", "line_start": 1, "line_end": 1},
+    ]}, d)["steps"]
+    assert [s.verified for s in steps] == [False, True, True]
+    assert steps[2].citation.file == ".eslintrc.js"
+
+
+def test_learn_failure_still_returns_answer_and_indexes(tmp_path):
+    from kb.errors import LLMUnavailable
+    from kb.packs.index import search
+
+    class Flaky(FakeProvider):
+        def run(self, req):
+            if self.requests:
+                raise LLMUnavailable("not signed in")
+            return super().run(req)
+
+    store, cos = build_pack(tmp_path)
+    out = run(make_deps(store, cos, Flaky([trace_reply(GOOD_STEPS)])), "How does scheduling of repeating tasks work?")
+    assert out["answer"].startswith("Admins") and out["saved_qa_id"] and out["suggestions"] == []
+    assert any(h.kind == "qa" for h in search(store.pack_dir("mini", "main"), "scheduling repeating"))
+
+
+def test_code_is_stripped_from_saved_prose(tmp_path):
+    steps = [dict(GOOD_STEPS[0], text="Calls `submitTask({ variables: { input } })` on publish")] + GOOD_STEPS[1:]
+    answer = "It works like this:\n```ts\nconst SECRET_CODE_MARKER = 1;\n```\nThe server saves it."
+    store, cos = build_pack(tmp_path)
+    out = run(make_deps(store, cos, FakeProvider([trace_reply(steps, answer), LEARN])), "How does scheduling of repeating tasks work?")
+    pack = store.load("mini", "main")
+    blob = pack.qa[0].model_dump_json() + pack.flows[0].model_dump_json()
+    assert "SECRET_CODE_MARKER" not in blob and "variables:" not in blob
+    assert "The server saves it." in out["answer"]
+
+
+def test_trace_prompt_forbids_quoting_code(tmp_path):
+    store, cos = build_pack(tmp_path)
+    p = FakeProvider([trace_reply(GOOD_STEPS)])
+    nodes.trace({"question": "q", "module_ids": ["tasks"], "shortlist": []}, make_deps(store, cos, p))
+    assert "do not quote source code" in (p.requests[0].system + p.requests[0].prompt).lower()
+
+
+def test_incomplete_pack_not_found_mentions_resume(tmp_path):
+    store, cos = build_pack(tmp_path)
+    store.update_manifest("mini", "main", status="incomplete")
+    out = nodes.render({"question": "billing?", "not_found": True}, make_deps(store, cos, FakeProvider()))
+    assert "kb analyze --resume" in out["answer"]
+
+
+def test_collect_without_modules_uses_node_hits(tmp_path):
+    store, cos = build_pack(tmp_path)
+    d = make_deps(store, cos, FakeProvider())
+    d.pack.modules = []
+    sl = nodes.collect({"question": "scheduleRepeat", "module_ids": []}, d)["shortlist"]
+    assert "mini-be:src/module/tasks/task/resolvers.ts#scheduleRepeat" in sl
+
+
+def test_no_reuse_flag_forces_fresh_trace(tmp_path):
+    store, cos = build_pack(tmp_path)
+    save_flow(store, cos)
+    out = nodes.understand({"question": "How does scheduling work in tasks?", "no_reuse": True}, make_deps(store, cos, FakeProvider()))
+    assert not out.get("reused_flow_id")

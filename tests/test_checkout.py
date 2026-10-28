@@ -78,3 +78,31 @@ def test_folder_inside_another_git_repo_is_plain_folder(tmp_path):
     (inner / "x.ts").write_text("1")
     co = checkout_repo(RepoConfig(name="c", role="frontend", local_path=inner), "release", tmp_path / "w")
     assert co.commit.startswith("local-")
+
+
+def test_dotfiles_do_not_change_local_commit(tmp_path):
+    d = tmp_path / "plain"
+    d.mkdir()
+    (d / "x.ts").write_text("1")
+    repo = RepoConfig(name="p", role="frontend", local_path=d)
+    c1 = checkout_repo(repo, "b", tmp_path / "w").commit
+    (d / ".DS_Store").write_text("finder")
+    (d / ".idea").mkdir()
+    (d / ".idea" / "ws.xml").write_text("x")
+    assert checkout_repo(repo, "b", tmp_path / "w").commit == c1
+
+
+def test_checkout_at_pins_commit_without_network(tmp_path):
+    import shutil
+
+    from kb.ingest.checkout import checkout_at
+
+    sha_a = make_git_repo(tmp_path / "origin", branch="main")
+    repo = RepoConfig(name="r", role="backend", url=str(tmp_path / "origin"))
+    checkout_repo(repo, "main", tmp_path / "work")
+    (tmp_path / "origin" / "a.ts").write_text("changed\n")
+    git(tmp_path / "origin", "commit", "-qam", "b")
+    co = checkout_at(repo, "main", sha_a, tmp_path / "work")
+    assert co.commit == sha_a
+    shutil.rmtree(tmp_path / "origin")  # offline: existing clone still works
+    assert checkout_at(repo, "main", sha_a, tmp_path / "work").commit == sha_a

@@ -12,3 +12,7 @@ class LLMUnavailable(KbError):
 
 class LLMOutputError(KbError):
     pass
+
+
+class LLMCallError(LLMOutputError):
+    """One call failed (max turns, persistent overload, API error); the run can continue without it."""

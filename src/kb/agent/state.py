@@ -20,3 +20,4 @@ class AgentState(TypedDict, total=False):
     no_source: bool
     saved_qa_id: str | None
     suggestions: list[str]
+    no_reuse: bool

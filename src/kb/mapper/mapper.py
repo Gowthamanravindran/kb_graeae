@@ -64,9 +64,13 @@ def map_modules(clusters: list[Cluster], g: CodeGraph, context_text: str, provid
     failed: list[str] = []
     for c in clusters:
         ck = checkpoint_dir / f"{c.id}.json"
+        d = None
         if resume and ck.exists():
-            d = ModuleDraft.model_validate_json(ck.read_text())
-        else:
+            try:
+                d = ModuleDraft.model_validate_json(ck.read_text())
+            except ValueError:
+                d = None  # truncated/corrupt checkpoint: redo it
+        if d is None:
             try:
                 d = ask_json(provider, LLMRequest(prompt=_prompt(c, g, context_text), system=SYSTEM, cwd=checkpoint_dir),
                              ModuleDraft, tracer, f"name_module:{c.id}")

@@ -25,11 +25,20 @@ def score(entry: dict, steps) -> dict:
 
 
 def run_golden(cfg, branch: str, golden_path: Path, store, provider, tracer, author: str) -> list[dict]:
-    from kb.ask import run_ask
+    """Fresh answers (no reuse) against a scratch copy of the pack, so the user's overlay is untouched."""
+    import shutil
+    import tempfile
 
+    from kb.ask import run_ask
+    from kb.packs.store import PackStore
+
+    scratch = PackStore(Path(tempfile.mkdtemp(prefix="kb-golden-")))
+    src = store.pack_dir(cfg.project, branch)
+    if src.exists():
+        shutil.copytree(src, scratch.pack_dir(cfg.project, branch))
     results = []
     for e in load_golden(golden_path):
-        st = run_ask(cfg, branch, e["question"], store, provider, tracer, author=author)
+        st = run_ask(cfg, branch, e["question"], scratch, provider, tracer, author=author, no_reuse=True)
         r = score(e, st.get("steps", []))
         r["reused"] = bool(st.get("reused_flow_id"))
         results.append(r)
@@ -37,8 +46,8 @@ def run_golden(cfg, branch: str, golden_path: Path, store, provider, tracer, aut
     if client is not None:  # Langfuse on: record the run as a dataset
         name = f"golden-{date.today().isoformat()}"
         client.create_dataset(name=name)
-        for r in results:
+        for e, r in zip(load_golden(golden_path), results):
             client.create_dataset_item(dataset_name=name, input={"question": r["question"]},
-                                       expected_output={"files": r["missing"]}, metadata=r)
+                                       expected_output={"files": e["expect_files"]}, metadata=r)
         client.flush()
     return results

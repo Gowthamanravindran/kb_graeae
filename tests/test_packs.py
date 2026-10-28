@@ -94,7 +94,8 @@ def test_sanitized_graph_contains_no_source_text(tmp_path):
 
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / "a.ts").write_text("export function scheduleIt() {\n  const s = 'SECRET_BODY_MARKER';\n  return s;\n}\n")
+    (repo / "a.ts").write_text("// NOTE: SECRET_COMMENT_MARKER explains why\n/** WHY: SECRET_DOC_MARKER */\n"
+                               "export function scheduleIt() {\n  const s = 'SECRET_BODY_MARKER';\n  return s;\n}\n")
     co = Checkout("fe", repo, "x")
     g = parse_graphify_json(run_graphify(co, tmp_path / "gout", []), "fe", repo)
     assert g.nodes()
@@ -102,7 +103,9 @@ def test_sanitized_graph_contains_no_source_text(tmp_path):
     d = s.write_base("p", "b", manifest(project="p", branch="b"), {"fe": g}, [], [], "")
     for f in d.rglob("*"):
         if f.is_file():
-            assert b"SECRET_BODY_MARKER" not in f.read_bytes(), f
+            data = f.read_bytes()
+            for marker in (b"SECRET_BODY_MARKER", b"SECRET_COMMENT_MARKER", b"SECRET_DOC_MARKER"):
+                assert marker not in data, (f, marker)
 
 
 def test_fts_finds_module_by_summary_word(tmp_path):

@@ -39,8 +39,10 @@ def content_hash(root: Path) -> str:
     h = hashlib.sha256()
     entries = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
         for f in filenames:
+            if f.startswith("."):
+                continue  # .DS_Store, editor files: change without the code changing
             p = Path(dirpath) / f
             try:
                 st = p.stat()
@@ -82,3 +84,22 @@ def checkout_repo(repo: RepoConfig, branch: str, work_dir: Path) -> Checkout:
             )
         return Checkout(repo.name, root, _git(base, "rev-parse", "HEAD"))
     return Checkout(repo.name, root, content_hash(root))
+
+
+def checkout_at(repo: RepoConfig, branch: str, commit: str, work_dir: Path) -> Checkout:
+    """Source at an exact commit, for reading a pack later. `url` repos: the managed clone is moved to
+    `commit` (fetching only if the commit is missing, so it works offline). `local_path` repos are the
+    user's own folders and are returned as they are; callers compare `commit` to warn about drift."""
+    if repo.url is None:
+        return checkout_repo(repo, branch, work_dir)
+    base = Path(work_dir) / repo.name
+    if not (base / ".git").exists():
+        base.parent.mkdir(parents=True, exist_ok=True)
+        _git(base.parent, "clone", "--quiet", repo.url, str(base))
+    try:
+        _git(base, "checkout", "--quiet", "--detach", commit)
+    except KbError:
+        _git(base, "fetch", "--quiet", "origin")
+        _git(base, "checkout", "--quiet", "--detach", commit)
+    root = base / repo.path if repo.path else base
+    return Checkout(repo.name, root, _git(base, "rev-parse", "HEAD"))

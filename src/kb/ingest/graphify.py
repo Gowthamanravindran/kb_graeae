@@ -4,7 +4,8 @@ Captured schema (graphify 0.9.x, `extract --no-cluster`), see tests/fixtures/gra
   top level: {"nodes": [...], "edges": [...]}   (clustered output uses "links")
   node: id, label ("scheduleRepeat()" for callables, file basename or "dir/file.ts" for files),
         source_file (relative to the scanned dir), source_location ("L18"), _origin
-        external references have no source_file and are dropped.
+        external references have no source_file and are dropped; nodes with file_type other than
+        "code" (e.g. "rationale", whose label is a comment or docstring) are dropped: source text.
   edge: source, target, relation (calls|contains|imports|imports_from|indirect_call|...),
         confidence (EXTRACTED|INFERRED|AMBIGUOUS). Graphify marks the graph undirected,
         but source -> target is the direction of the relation; we keep it.
@@ -68,8 +69,8 @@ def parse_graphify_json(path: Path, repo: str, repo_root: Path, ignore: list[str
 
     for n in raw.get("nodes", []):
         src = n.get("source_file")
-        if not src:
-            continue
+        if not src or n.get("file_type", "code") != "code":
+            continue  # external refs, and "rationale" nodes whose label is comment/docstring text
         p = Path(src)
         rel = p.resolve().relative_to(root).as_posix() if p.is_absolute() else PurePosixPath(src).as_posix()
         if matches_any(rel, list(ignore)):

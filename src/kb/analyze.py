@@ -38,6 +38,8 @@ def resolve_checkouts(cfg: ProjectConfig, branch: str, store: PackStore) -> dict
 def context_text(cfg: ProjectConfig, checkouts: dict[str, Checkout]) -> str:
     parts = []
     for repo, pattern in cfg.context_doc_globs():
+        if repo not in checkouts:
+            continue  # no source for that repo on this machine
         root = checkouts[repo].root
         for p in sorted(root.glob(pattern)):
             if p.is_file():
@@ -92,6 +94,7 @@ def run_analyze(cfg: ProjectConfig, branch: str, store: PackStore, provider: LLM
                             created_at=datetime.now(timezone.utc), status="incomplete", stats=stats)
         store.write_base(project, branch, manifest, graphs, links, [], "", link_nodes=link_nodes)
         _mark_stale(store, project, branch, checkouts)
+        build_index(store.pack_dir(project, branch), store.load(project, branch))  # usable even if step 4 fails
 
         provider.check()
         with tracer.span("module_map") as sp:

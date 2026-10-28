@@ -109,3 +109,29 @@ def test_system_overview_gets_mermaid_fallback(tmp_path):
     mods, _ = map_modules(clusters, g, "", FakeProvider(default=draft("Tasks", [])), NoopTracer(), tmp_path / "ck", resume=False)
     md = write_system_overview(mods, g, FakeProvider(["The system has parts."]), NoopTracer(), cwd=tmp_path)
     assert md.startswith("The system has parts.") and "```mermaid" in md
+
+
+def test_per_call_failure_marks_module_failed(tmp_path):
+    from kb.errors import LLMCallError
+
+    class Boom(FakeProvider):
+        def run(self, req):
+            if not self.requests:
+                self.requests.append(req)
+                raise LLMCallError("max turns")
+            return super().run(req)
+
+    g = graph()
+    clusters = cluster_graph(g, min_size=1)
+    mods, failed = map_modules(clusters, g, "", Boom(default=draft("T", [])), NoopTracer(), tmp_path / "ck", resume=False)
+    assert failed == [clusters[0].id] and len(mods) == len(clusters) - 1
+
+
+def test_corrupt_checkpoint_is_redone(tmp_path):
+    g = graph()
+    clusters = cluster_graph(g, min_size=1)
+    (tmp_path / "ck").mkdir()
+    (tmp_path / "ck" / f"{clusters[0].id}.json").write_text("{trunc")
+    p = FakeProvider(default=draft("T", []))
+    mods, failed = map_modules(clusters, g, "", p, NoopTracer(), tmp_path / "ck", resume=True)
+    assert not failed and len(p.requests) == len(clusters)

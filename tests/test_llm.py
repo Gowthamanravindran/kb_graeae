@@ -58,3 +58,58 @@ def test_check_without_cli(monkeypatch):
     monkeypatch.setattr("kb.llm.claude_code.shutil.which", lambda _: None)
     with pytest.raises(LLMUnavailable, match="not found"):
         ClaudeCodeProvider().check()
+
+
+def _result(**kw):
+    base = dict(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1, session_id="s",
+                result="ok", usage={"input_tokens": 1, "output_tokens": 1})
+    return ResultMessage(**{**base, **kw})
+
+
+def _seq(results):
+    calls = {"n": 0}
+
+    async def q(*, prompt, options=None, transport=None):
+        r = results[min(calls["n"], len(results) - 1)]
+        calls["n"] += 1
+        if isinstance(r, Exception):
+            raise r
+        yield r
+    return q, calls
+
+
+def test_max_turns_is_a_per_call_failure_not_unavailable(tmp_path, monkeypatch):
+    from kb.errors import LLMCallError, LLMOutputError
+
+    q, _ = _seq([_result(subtype="error_max_turns", is_error=True, result=None)])
+    monkeypatch.setattr("kb.llm.claude_code.query", q)
+    with pytest.raises(LLMCallError) as e:
+        ClaudeCodeProvider(sleep=lambda s: None).run(LLMRequest(prompt="p", system="s", cwd=tmp_path))
+    assert isinstance(e.value, LLMOutputError) and not isinstance(e.value, LLMUnavailable)
+
+
+def test_transient_error_retried_with_backoff(tmp_path, monkeypatch):
+    q, calls = _seq([_result(is_error=True, subtype="error", result="API Error: 529 overloaded", api_error_status=529),
+                     _result(result="fine")])
+    monkeypatch.setattr("kb.llm.claude_code.query", q)
+    slept = []
+    r = ClaudeCodeProvider(sleep=slept.append).run(LLMRequest(prompt="p", system="s", cwd=tmp_path))
+    assert r.text == "fine" and calls["n"] == 2 and slept == [2]
+
+
+def test_persistent_transient_error_becomes_call_error(tmp_path, monkeypatch):
+    from kb.errors import LLMCallError
+
+    q, calls = _seq([_result(is_error=True, subtype="error", result="rate limit exceeded", api_error_status=429)])
+    monkeypatch.setattr("kb.llm.claude_code.query", q)
+    slept = []
+    with pytest.raises(LLMCallError):
+        ClaudeCodeProvider(sleep=slept.append).run(LLMRequest(prompt="p", system="s", cwd=tmp_path))
+    assert calls["n"] == 3 and slept == [2, 8]
+
+
+def test_settings_from_user_repo_not_loaded(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr("kb.llm.claude_code.query", _fake_query(captured))
+    ClaudeCodeProvider().run(LLMRequest(prompt="p", system="s", cwd=tmp_path))
+    assert captured["options"].setting_sources == []

@@ -89,3 +89,11 @@ def test_memory_list_shows_private_item(tmp_path, monkeypatch):
     CliRunner().invoke(app, ["ask", str(y), "--branch", "main", Q])
     r = CliRunner().invoke(app, ["memory", "list", str(y), "--branch", "main"])
     assert r.exit_code == 0 and "private" in r.stdout and Q in r.stdout
+
+
+def test_context_doc_repo_without_checkout_does_not_crash(tmp_path, monkeypatch):
+    p = FakeProvider([trace_reply(GOOD_STEPS), LEARN])
+    _, y = setup(tmp_path, monkeypatch, p, repos=("mini-fe",))
+    y.write_text(y.read_text() + "context_docs: ['mini-be:CONTEXT.md']\n")
+    r = CliRunner().invoke(app, ["ask", str(y), "--branch", "main", Q])
+    assert r.exit_code == 0, r.output

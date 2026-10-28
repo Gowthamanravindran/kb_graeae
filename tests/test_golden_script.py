@@ -24,3 +24,25 @@ def test_defaults_and_file_loads():
     assert len(entries) == 10
     assert entries[0]["min_recall"] == 1.0 and entries[1]["min_recall"] == 0.5 and entries[1]["min_verified_ratio"] == 0.6
     assert score(entries[1], [])["passed"] is False
+
+
+def test_run_golden_is_fresh_and_isolated(tmp_path):
+    import yaml as _y
+
+    from kb.config import ProjectConfig
+    from kb.golden import run_golden
+    from kb.tracing import NoopTracer
+
+    from agent_helpers import FIX, GOOD_STEPS, LEARN, build_pack, save_flow, trace_reply
+    from fakes import FakeProvider
+
+    store, cos = build_pack(tmp_path)
+    save_flow(store, cos, question="How does scheduling of repeating tasks work?")
+    g = tmp_path / "g.yaml"
+    g.write_text(_y.safe_dump([{"question": "How does scheduling of repeating tasks work?",
+                                "expect_files": ["mini-be:src/module/tasks/task/resolvers.ts"]}]))
+    cfg = ProjectConfig(project="mini", repos=[{"name": r, "role": "x", "local_path": str(FIX / r)} for r in ("mini-fe", "mini-be")])
+    p = FakeProvider([trace_reply(GOOD_STEPS), LEARN])
+    [r] = run_golden(cfg, "main", g, store, p, NoopTracer(), "me")
+    assert len(p.requests) >= 1 and r["recall"] == 1.0 and not r["reused"]
+    assert [q.id for q in store.load("mini", "main").qa] == ["q1"]  # user's overlay untouched

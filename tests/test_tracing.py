@@ -86,3 +86,9 @@ def test_ask_json_retries_once_then_raises(tmp_path):
 def test_ask_json_retry_succeeds(tmp_path):
     p = FakeProvider(["oops", '```json\n{"name": "ok"}\n```'])
     assert ask_json(p, LLMRequest(prompt="q", system="s", cwd=tmp_path), Out, NoopTracer(), "x").name == "ok"
+
+
+def test_ask_json_survives_fences_inside_strings(tmp_path):
+    reply = '```json\n{"name": "uses ```ts\\nconst a = 1;\\n``` inside"}\n```'
+    out = ask_json(FakeProvider([reply]), LLMRequest(prompt="q", system="s", cwd=tmp_path), Out, NoopTracer(), "x")
+    assert out.name.startswith("uses")

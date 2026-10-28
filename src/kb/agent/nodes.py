@@ -10,6 +10,7 @@ learn:      save Q&A + flow (private), queue suggested scenarios, propose module
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections import Counter, deque
 from datetime import datetime, timezone
@@ -18,7 +19,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from kb.agent.state import AgentState
-from kb.errors import LLMOutputError
+from kb.errors import KbError
 from kb.llm.base import LLMRequest
 from kb.llm.json_call import ask_json
 from kb.mapper.cluster import LINKER_KINDS
@@ -35,8 +36,19 @@ KIND_ORDER = ["route", "component", "graphql_op", "resolver", "queue_topic"]
 SYSTEM = (
     "You explain how a software feature works, for people who may not read code. "
     "Trace the real code: open the files you are given, follow calls, and only describe what you read. "
-    "Use the product's glossary terms. Plain English, one action per step."
+    "Use the product's glossary terms. Plain English, one action per step. "
+    "Do not quote source code: describe what the code does in words (names of screens, actions and data are fine)."
 )
+_FENCE = re.compile(r"```.*?(```|$)", re.S)
+_INLINE = re.compile(r"`([^`]*)`")
+_CODEY = re.compile(r"[{}();=<>]|=>|\bconst\b|\breturn\b")
+
+
+def strip_code(text: str) -> str:
+    """Saved prose must not carry source (spec 3.4): drop fenced blocks and code-like inline spans."""
+    text = _FENCE.sub(" ", text or "")
+    text = _INLINE.sub(lambda m: m.group(1) if not _CODEY.search(m.group(1)) and len(m.group(1)) <= 60 else "", text)
+    return re.sub(r"[ \t]{2,}", " ", re.sub(r"\n{3,}", "\n\n", text)).strip()
 
 
 # ---------- understand ----------
@@ -89,7 +101,7 @@ def understand(state: AgentState, deps) -> dict:
         out["not_found"] = True
         return out
 
-    if not seed and hits:
+    if not seed and not state.get("no_reuse") and hits:
         best = hits[0].score
         for h in hits:
             if h.kind != "flow" or h.score < REUSE_SCORE * best:
@@ -114,7 +126,8 @@ def collect(state: AgentState, deps) -> dict:
     allowed = {m for mod in mods for m in mod.members}
     starts = [e for mod in mods for e in mod.entry_points if g.has_node(e)]
     for h in search(deps.pack_dir, state["question"], limit=20, kinds={"node"}):
-        if h.ref in allowed and h.ref not in starts and g.has_node(h.ref):
+        # no modules (e.g. an incomplete pack): any node the search found may start the walk
+        if (not mods or h.ref in allowed) and h.ref not in starts and g.has_node(h.ref):
             starts.append(h.ref)
 
     seen: dict[str, int] = {}
@@ -214,15 +227,10 @@ def _locate(step: dict, checkouts: dict) -> tuple[str, str] | None:
             continue
         root = Path(co.root).resolve()
         p = Path(file)
-        if p.is_absolute():
-            try:
-                rel = p.resolve().relative_to(root).as_posix()
-            except ValueError:
-                continue
-        else:
-            rel = file.lstrip("./")
-        if (root / rel).is_file():
-            return repo, rel
+        target = (p if p.is_absolute() else root / file.removeprefix("./")).resolve()
+        if not target.is_relative_to(root) or not target.is_file():
+            continue  # outside this checkout (e.g. "../../x") or missing
+        return repo, target.relative_to(root).as_posix()
     return None
 
 
@@ -240,7 +248,7 @@ def verify(state: AgentState, deps) -> dict:
             if 1 <= a <= b <= n:
                 citation = Citation(repo=repo, file=rel, line_start=a, line_end=b, content_hash=hash_span(root, rel, a, b))
                 ok = True
-        steps.append(FlowStep(side=side, text=str(d.get("text", "")).strip(), citation=citation, verified=ok))
+        steps.append(FlowStep(side=side, text=strip_code(str(d.get("text", ""))), citation=citation, verified=ok))
     return {"steps": steps}
 
 
@@ -266,14 +274,17 @@ def render(state: AgentState, deps) -> dict:
     pack = deps.pack
     if state.get("not_found"):
         terms = ", ".join(sorted(_terms(state["question"]))) or state["question"]
-        return {"answer": f"I couldn't find code for this in {pack.manifest.project}@{pack.manifest.branch}. "
-                          f"Searched modules and symbols for: {terms}.", "steps": [], "mermaid": ""}
+        answer = (f"I couldn't find code for this in {pack.manifest.project}@{pack.manifest.branch}. "
+                  f"Searched modules and symbols for: {terms}.")
+        if pack.manifest.status == "incomplete":
+            answer += " This pack is incomplete (module map not finished); run `kb analyze --resume` and ask again."
+        return {"answer": answer, "steps": [], "mermaid": ""}
     fid = state.get("reused_flow_id")
     if fid:
         flow = next(f for f in pack.flows if f.id == fid)
         qa = next((x for x in pack.qa if x.flow_id == fid), None)
         return {"answer": qa.answer if qa else flow.question, "steps": flow.steps, "mermaid": flow.mermaid}
-    answer = state.get("answer", "")
+    answer = strip_code(state.get("answer", ""))
     if state.get("no_source"):
         answer = f"No source verification — {answer}"
     return {"answer": answer, "mermaid": mermaid_for(state.get("steps", []))}
@@ -315,14 +326,15 @@ def learn(state: AgentState, deps) -> dict:
     try:
         out = ask_json(deps.provider, LLMRequest(prompt=prompt, system=SYSTEM, cwd=Path(deps.pack_dir)), LearnOut,
                        deps.tracer, "learn")
-        suggestions = [s.strip() for s in out.suggestions if s.strip()][:5]
+        suggestions = [strip_code(s) for s in out.suggestions if strip_code(s)][:5]
         deps.store.add_suggestions(m.project, m.branch, [Suggestion(id=uuid.uuid4().hex[:12], question=s, source_qa_id=qa.id)
                                                          for s in suggestions])
         valid = {x.id for x in mods}
         for note in out.module_notes:
-            if note.module_id in valid and note.improved_summary.strip():
-                deps.store.save_module_note(m.project, m.branch, note.module_id, note.improved_summary.strip())
-    except LLMOutputError:
-        pass
+            text = strip_code(note.improved_summary)
+            if note.module_id in valid and text:
+                deps.store.save_module_note(m.project, m.branch, note.module_id, text)
+    except KbError as e:  # the answer is already saved; suggestions are optional
+        deps.extra.setdefault("warnings", []).append(f"suggestions skipped: {e}")
     build_index(deps.pack_dir, deps.store.load(m.project, m.branch))
     return {"saved_qa_id": qa.id, "suggestions": suggestions}

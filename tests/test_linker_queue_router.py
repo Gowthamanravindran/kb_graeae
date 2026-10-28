@@ -66,3 +66,14 @@ def test_get_linker_known_and_unknown():
     assert get_linker("graphql").type == "graphql"
     with pytest.raises(ConfigError):
         get_linker("kafka")
+
+
+def test_inline_handler_and_concurrency_never_copy_source(tmp_path):
+    (tmp_path / "q.ts").write_text(
+        "emailQueue.process(async (job) => { const s = 'SECRET_INLINE_MARKER'; return s; });\n"
+        "jobsQueue.process(5, handler);\n")
+    c = ctx({"type": "bull-queue", "in": "w"}, repos=("w",), roots={"w": tmp_path})
+    edges = run(BullQueueLinker(), c)
+    dump = repr([e.model_dump() for e in edges]) + repr([n.model_dump() for n in c.graph.nodes()])
+    assert "SECRET_INLINE_MARKER" not in dump and "=>" not in dump
+    assert {e.dst for e in edges} == {"unresolved:queue:<all-jobs>"}
