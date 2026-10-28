@@ -15,9 +15,55 @@ from kb.sync.pack_io import base_files
 SEED_HEADER = "# repos without url: add local_path in your own copy\n"
 
 
+def _mark_published(store: PackStore, project: str, branch: str, items: list[dict]) -> None:
+    pack = store.load(project, branch)
+    ids = {i["id"] for i in items}
+    for q in pack.qa:
+        if q.id in ids and q.visibility != "published":
+            store.save_qa(project, branch, q.model_copy(update={"visibility": "published"}))
+    for f in pack.flows:
+        if f.id in ids and f.visibility != "published":
+            store.save_flow(project, branch, f.model_copy(update={"visibility": "published"}))
+
+
 def flush_outbox(project: str, branch: str, client: RegistryClient, store: PackStore) -> int:
-    """Send queued publishes. Filled in with the outbox (Task 11)."""
-    return 0
+    """Send queued publishes; if the registry is still unreachable they stay queued."""
+    from kb.errors import RegistryUnavailable
+    from kb.sync.outbox import Outbox
+
+    box = Outbox(store.kb_home)
+    items = box.pending(project, branch)
+    if not items:
+        return 0
+    try:
+        client.publish(project, branch, items)
+    except RegistryUnavailable:
+        return 0
+    box.clear(project, branch, [i["id"] for i in items])
+    if store.exists(project, branch):
+        _mark_published(store, project, branch, items)
+    return len(items)
+
+
+def publish_items(cfg: ProjectConfig, branch: str, store: PackStore, client: RegistryClient,
+                  qa_ids: list[str], include_notes: bool) -> dict:
+    from kb.errors import RegistryUnavailable
+    from kb.sync.outbox import Outbox
+    from kb.sync.pack_io import overlay_items_for_publish
+
+    project = cfg.project
+    items = overlay_items_for_publish(store.load(project, branch), qa_ids, include_notes)
+    if not items:
+        raise KbError("nothing to publish: give answer ids and/or --notes")
+    try:
+        _require(client, project, "contributor")
+        flush_outbox(project, branch, client, store)
+        res = client.publish(project, branch, items)
+    except RegistryUnavailable:
+        Outbox(store.kb_home).add(project, branch, items)
+        return {"queued": len(items)}
+    _mark_published(store, project, branch, items)
+    return res
 
 
 ROLES = ("viewer", "contributor", "maintainer")  # same ladder as the registry (no server import here)

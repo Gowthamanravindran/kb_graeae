@@ -59,3 +59,32 @@ def apply_overlay(store, project: str, branch: str, items: list[dict]) -> tuple[
         store.save_module_note(project, branch, module_id, text)
         written += 1
     return written, warnings
+
+
+def note_id(module_id: str, text: str) -> str:
+    import hashlib
+
+    return f"note:{module_id}:{hashlib.sha256(text.encode()).hexdigest()[:12]}"
+
+
+def overlay_items_for_publish(pack, qa_ids: list[str], include_notes: bool) -> list[dict]:
+    """Each Q&A with its flow and the suggestions it produced; optionally every local module note."""
+    from kb.errors import KbError
+
+    qa = {q.id: q for q in pack.qa}
+    flows = {f.id: f for f in pack.flows}
+    items: list[dict] = []
+    for qid in qa_ids:
+        q = qa.get(qid)
+        if q is None:
+            raise KbError(f"no saved answer with id '{qid}' (see kb memory list)")
+        items.append({"id": q.id, "kind": "qa", "payload": q.model_dump(mode="json")})
+        if q.flow_id and q.flow_id in flows:
+            f = flows[q.flow_id]
+            items.append({"id": f.id, "kind": "flow", "payload": f.model_dump(mode="json")})
+        items += [{"id": s.id, "kind": "suggestion", "payload": s.model_dump(mode="json")}
+                  for s in pack.suggestions if s.source_qa_id == q.id]
+    if include_notes:
+        items += [{"id": note_id(mid, text), "kind": "module_note", "payload": {"module_id": mid, "text": text}}
+                  for mid, text in sorted(pack.module_notes.items())]
+    return items

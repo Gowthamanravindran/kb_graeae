@@ -146,12 +146,17 @@ def memory_list(
     from kb.config import load_config
     from kb.packs.store import PackStore
 
+    from kb.sync.outbox import Outbox
+
     cfg = load_config(config)
-    pack = PackStore().load(cfg.project, branch)
+    store = PackStore()
+    pack = store.load(cfg.project, branch)
+    queued = {i["id"] for i in Outbox(store.kb_home).pending(cfg.project, branch)}
     if not pack.qa:
         typer.echo("No saved answers yet.")
     for q in sorted(pack.qa, key=lambda q: q.created_at):
-        typer.echo(f"{q.id}  {q.visibility:<9} {'STALE ' if q.stale else ''}{q.question}")
+        state = "queued" if q.id in queued else q.visibility
+        typer.echo(f"{q.id}  {state:<9} {'STALE ' if q.stale else ''}{q.question}")
 
 
 @app.command()
@@ -251,6 +256,49 @@ def pull(
     if cfg is None:
         typer.echo(f"project config saved to {store.kb_home / 'projects' / name / 'kb.yaml'} "
                    "(add local_path for repos you have checked out)")
+
+
+@app.command()
+@handle_errors
+def publish(
+    config: Path = typer.Argument(..., help="Path to kb.yaml"),
+    ids: list[str] = typer.Argument(None, help="Saved answer ids (see kb memory list)"),
+    branch: str = typer.Option(..., "--branch", "-b"),
+    notes: bool = typer.Option(False, "--notes", help="Also share your improved module summaries"),
+) -> None:
+    """Share chosen answers (with their flows and suggestions) on the registry."""
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+    from kb.sync import client as sc
+    from kb.sync.commands import publish_items
+
+    cfg = load_config(config)
+    out = publish_items(cfg, branch, PackStore(), sc.client_for(cfg), ids or [], notes)
+    if "queued" in out:
+        typer.echo(f"registry unreachable: queued {out['queued']} items; they will be sent on the next "
+                   "kb sync / push / pull / publish")
+    else:
+        typer.echo(f"published {len(out['added'])} new, {len(out['existing'])} already shared")
+
+
+@app.command()
+@handle_errors
+def sync(
+    config: Path = typer.Argument(..., help="Path to kb.yaml"),
+    branch: str = typer.Option(..., "--branch", "-b"),
+) -> None:
+    """Send publishes that were queued while the registry was unreachable."""
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+    from kb.sync import client as sc
+    from kb.sync.commands import flush_outbox
+    from kb.sync.outbox import Outbox
+
+    cfg = load_config(config)
+    store = PackStore()
+    sent = flush_outbox(cfg.project, branch, sc.client_for(cfg), store)
+    left = len(Outbox(store.kb_home).pending(cfg.project, branch))
+    typer.echo(f"sent {sent} queued items" + (f"; {left} still queued (registry unreachable)" if left else ""))
 
 
 def main() -> None:
