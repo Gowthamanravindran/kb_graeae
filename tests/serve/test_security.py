@@ -92,3 +92,14 @@ def test_ui_dir_served_same_origin_behind_token(tmp_path):
     r = c.get("/", headers={"X-KB-Token": TOKEN})
     assert r.status_code == 200 and "KB Desktop" in r.text
     assert c.get("/api/status", headers={"X-KB-Token": TOKEN}).status_code == 200  # API still wins over static
+
+
+def test_status_reports_langfuse_host(tmp_path, monkeypatch):
+    from kb.serve.app import ServeSettings, create_app
+
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://localhost:3000/")
+    app = create_app(ServeSettings(kb_home=tmp_path, token=TOKEN, provider_factory=lambda: FakeProvider()))
+    d = TestClient(app, base_url="http://127.0.0.1:1").get("/api/status", headers={"X-KB-Token": TOKEN}).json()
+    assert d["langfuse"] == {"configured": True, "host": "http://localhost:3000"}

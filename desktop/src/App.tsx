@@ -5,20 +5,21 @@ import { Sidebar } from "./components/Sidebar";
 import { AppProvider, useApp } from "./state";
 import { Library } from "./views/Library";
 import { MapView } from "./views/MapView";
+import { Ask } from "./views/Ask";
 
 function Placeholder({ title }: { title: string }) {
   return <h1 className="text-[26px] font-bold">{title}</h1>;
 }
 
 function Main() {
-  const { view } = useApp();
+  const { view, project, branch } = useApp();
   return (
     <div className="flex h-full">
       <Sidebar />
       <main className="min-w-0 flex-1 overflow-y-auto px-10 py-8">
         {view === "library" && <Library />}
         {view === "map" && <MapView />}
-        {view === "ask" && <Placeholder title="Ask" />}
+        {view === "ask" && <Ask key={`${project}@${branch}`} />}
         {view === "memory" && <Placeholder title="Memory" />}
       </main>
     </div>

@@ -1,5 +1,5 @@
 // Mirrors kb serve payloads (src/kb/serve).
-export interface Status { version: string; claude: { available: boolean; reason: string | null }; langfuse: { configured: boolean } }
+export interface Status { version: string; claude: { available: boolean; reason: string | null }; langfuse: { configured: boolean; host?: string | null } }
 export interface ProjectRow { name: string; config_path: string; registry: string | null; repos?: { name: string; role: string }[]; linkers?: string[]; error?: string }
 export interface RegistryStatus { url: string | null; logged_in: boolean; email: string | null; reachable: boolean; sso: boolean }
 export interface LocalBranch { version: number; status: string; commits: Record<string, string>; author: string | null; created_at: string | null; modules: number; qa_total: number; qa_published: number; synced: boolean; stats: Record<string, number> }

@@ -138,8 +138,10 @@ def create_app(settings: ServeSettings) -> FastAPI:
 
     @app.get("/api/status")
     def status() -> dict:
+        configured = bool(os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY"))
+        host = (os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL") or "").rstrip("/") or None
         return {"version": __version__, "claude": settings.claude_status(),
-                "langfuse": {"configured": bool(os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY"))}}
+                "langfuse": {"configured": configured, "host": host if configured else None}}
 
     @app.get("/api/projects")
     def projects() -> list[dict]:
