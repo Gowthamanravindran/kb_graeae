@@ -14,6 +14,7 @@ class Reg:
     """An in-process registry on SQLite + a folder of blobs, with helpers to seed it."""
 
     def __init__(self, tmp: Path, **settings):
+        tmp.mkdir(parents=True, exist_ok=True)
         url = f"sqlite:///{tmp / 'reg.db'}"
         upgrade(url)
         self.settings = Settings(database_url=url, storage=f"file://{tmp / 'blobs'}", **settings)

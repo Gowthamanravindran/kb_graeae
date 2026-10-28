@@ -154,5 +154,56 @@ def memory_list(
         typer.echo(f"{q.id}  {q.visibility:<9} {'STALE ' if q.stale else ''}{q.question}")
 
 
+@app.command()
+@handle_errors
+def login(
+    registry: str = typer.Argument(..., help="Registry URL, e.g. https://kb.acme.internal"),
+    token: str = typer.Option(None, "--token", help="API token from your registry admin"),
+) -> None:
+    """Sign in to a registry (API token, or single sign-on when the registry uses it)."""
+    from kb.packs.store import default_kb_home
+    from kb.sync import client as sc
+    from kb.sync.credentials import norm_url, save_token
+
+    url = norm_url(registry)
+    if token:
+        me = sc.RegistryClient(url, token, http=sc.make_http(url)).me()
+        save_token(default_kb_home(), url, token, "static")
+    else:
+        from kb.sync.oidc import device_login
+
+        got = device_login(url, sc.make_http(url))
+        save_token(default_kb_home(), url, got["token"], "oidc", got.get("refresh_token"), got.get("expires_at"))
+        me = sc.client_for(registry=url).me()
+    typer.echo(f"logged in to {url} as {me['email']}")
+
+
+@app.command("list")
+@handle_errors
+def list_cmd(
+    config: Path = typer.Argument(None, help="kb.yaml: list this project's branches"),
+    registry: str = typer.Option(None, "--registry"),
+) -> None:
+    """List projects on the registry, or the analysed branches of a project."""
+    from kb.config import load_config
+    from kb.sync import client as sc
+
+    cfg = load_config(config) if config else None
+    c = sc.client_for(cfg, registry)
+    if cfg is None:
+        rows = c.projects()
+        if not rows:
+            typer.echo("No projects you can see.")
+        for p in rows:
+            typer.echo(f"{p['name']:<30} {p['role']}")
+        return
+    rows = c.branches(cfg.project)
+    if not rows:
+        typer.echo(f"No analysed branches for {cfg.project} yet.")
+    for b in rows:
+        commits = ", ".join(f"{k}={v[:12]}" for k, v in b["commits"].items())
+        typer.echo(f"{b['branch']:<28} v{b['latest_version']:<4} {b['overlay_count']:>4} shared  {b['created_by']}  {commits}")
+
+
 def main() -> None:
     app()
