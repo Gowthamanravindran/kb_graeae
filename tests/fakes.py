@@ -36,3 +36,64 @@ class FakeProvider:
 
 def step(tool: str, summary: str) -> ToolStep:
     return ToolStep(tool=tool, input_summary=summary, started_at=datetime.now(timezone.utc), duration_ms=1)
+
+
+class RecordingSpan:
+    def __init__(self, tracer, name, parent=None, kind="span", input=None):
+        self.tracer, self.name, self.parent, self.kind, self.input = tracer, name, parent, kind, input
+        self.output = None
+        self.metadata = None
+        self.children: list[RecordingSpan] = []
+        tracer.all.append(self)
+
+    def end(self, output=None, metadata=None):
+        self.output, self.metadata = output, metadata
+
+    def child(self, name, input=None, metadata=None, as_type="span", **attrs):
+        c = RecordingSpan(self.tracer, name, self, as_type, input)
+        c.metadata, c.attrs = metadata, attrs
+        self.children.append(c)
+        return c
+
+
+class RecordingTracer:
+    def __init__(self):
+        self.all: list[RecordingSpan] = []
+        self.stack: list[RecordingSpan] = []
+        self.traces: list[tuple[str, dict]] = []
+        self.scores: list[tuple[str, float]] = []
+
+    @contextmanager
+    def trace(self, name, tags):
+        self.traces.append((name, tags))
+        with self.span(name) as s:
+            yield s
+
+    @contextmanager
+    def span(self, name, input=None):
+        parent = self.stack[-1] if self.stack else None
+        s = RecordingSpan(self, name, parent, input=input)
+        if parent:
+            parent.children.append(s)
+        self.stack.append(s)
+        try:
+            yield s
+        finally:
+            self.stack.pop()
+
+    def record_llm(self, parent, result, name, prompt):
+        from kb.tracing import record_llm_on
+
+        record_llm_on(parent, result, name, prompt)
+
+    def langgraph_callbacks(self):
+        return []
+
+    def score(self, name, value):
+        self.scores.append((name, value))
+
+    def flush(self):
+        pass
+
+    def names(self):
+        return [s.name for s in self.all]
