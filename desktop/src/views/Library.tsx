@@ -9,6 +9,7 @@ import { Checkbox } from "../components/ui/checkbox";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { LoginDialog } from "../components/LoginDialog";
+import { hostOf } from "../lib";
 import { useApp } from "../state";
 
 const BADGE: Record<BranchRow["state"], { text: string; tone: "ok" | "warn" | "priv" | "accent" }> = {
@@ -127,7 +128,7 @@ export function Library() {
         <Card className="flex flex-wrap items-center gap-6 px-6 py-5">
           <div className="flex min-w-[260px] flex-1 flex-col gap-1.5">
             <div className="text-lg font-semibold">{current.name}</div>
-            <div className="text-muted">{current.repos?.length ?? 0} repos · {current.registry ? `registry ${new URL(current.registry).host}` : "no registry"}</div>
+            <div className="text-muted">{current.repos?.length ?? 0} repos · {current.registry ? `registry ${hostOf(current.registry)}` : "no registry"}</div>
           </div>
           <div className="flex flex-wrap gap-2">
             {current.repos?.map((r) => <span key={r.name} className="rounded-md border border-line bg-bg px-2.5 py-1.5 text-xs"><b className="font-semibold">{r.name}</b> · {r.role}</span>)}

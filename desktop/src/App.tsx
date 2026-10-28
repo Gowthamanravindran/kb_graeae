@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "./api/client";
 import { EngineError } from "./components/EngineError";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { AppProvider, useApp } from "./state";
 import { Library } from "./views/Library";
@@ -9,15 +10,17 @@ import { Ask } from "./views/Ask";
 import { Memory } from "./views/Memory";
 
 function Main() {
-  const { view, project, branch } = useApp();
+  const { view, project, branch, go } = useApp();
   return (
     <div className="flex h-full">
-      <Sidebar />
+      <ErrorBoundary key={`side-${project}`}><Sidebar /></ErrorBoundary>
       <main className="min-w-0 flex-1 overflow-y-auto px-10 py-8">
+        <ErrorBoundary key={`${view}-${project}@${branch}`} onReset={() => go("library")}>
         {view === "library" && <Library />}
         {view === "map" && <MapView />}
         {view === "ask" && <Ask key={`${project}@${branch}`} />}
         {view === "memory" && <Memory key={`${project}@${branch}`} />}
+        </ErrorBoundary>
       </main>
     </div>
   );

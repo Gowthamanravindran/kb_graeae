@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from kb.errors import ConfigError
 
@@ -43,6 +43,18 @@ class ProjectConfig(BaseModel):
     ignore: list[str] = Field(default_factory=list)
     registry: str | None = None
     langfuse: str | None = None
+
+    @field_validator("registry")
+    @classmethod
+    def _registry_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        from urllib.parse import urlparse
+
+        u = urlparse(v.strip())
+        if u.scheme not in ("http", "https") or not u.netloc:
+            raise ValueError(f"registry must be an http(s) URL like https://kb.example.com, got '{v}'")
+        return v.strip().rstrip("/")
 
     @model_validator(mode="after")
     def _references(self) -> "ProjectConfig":

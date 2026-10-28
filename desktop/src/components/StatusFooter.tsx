@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { RegistryStatus } from "../api/types";
+import { hostOf } from "../lib";
 import { useApp } from "../state";
 import { LoginDialog } from "./LoginDialog";
 
@@ -16,7 +17,7 @@ export function StatusFooter() {
     setReg(null);
     if (current?.name && current.registry) void api.registry(current.name).then(setReg).catch(() => setReg(null));
   }, [api, current?.name, current?.registry, tick]);
-  const host = current?.registry ? new URL(current.registry).host : null;
+  const host = current?.registry ? hostOf(current.registry) : null;
   const claudeOk = !!status?.claude.available;
   return (
     <div className="mt-auto flex flex-col gap-2 rounded-lg bg-bg p-3 text-xs text-muted">

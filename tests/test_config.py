@@ -114,3 +114,12 @@ def test_sop_example_loads():
     cfg = load_config(Path(__file__).parent.parent / "examples" / "sop.kb.yaml")
     assert [r.name for r in cfg.repos] == ["sop-web", "sop-backend"]
     assert cfg.linkers[0].options["backend_style"] == "graphql-compose"
+
+
+def test_registry_must_be_http_url(tmp_path):
+    p = tmp_path / "kb.yaml"
+    p.write_text(SPEC_EXAMPLE.replace("registry: https://kb.acme.internal", "registry: kb.acme.internal"))
+    with pytest.raises(ConfigError, match="registry"):
+        load_config(p)
+    p.write_text(SPEC_EXAMPLE.replace("https://kb.acme.internal", "https://kb.acme.internal/"))
+    assert load_config(p).registry == "https://kb.acme.internal"
