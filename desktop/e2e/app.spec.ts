@@ -38,6 +38,21 @@ test("quitting_kills_engine", async () => {
   expect(running()).toBe("");
 });
 
+test("engine_dying_later_shows_error_screen", async () => {
+  const { home } = makeHome();
+  const { app, page } = await launch({ KB_HOME: home });
+  await expect(page.getByRole("heading", { name: "Library" })).toBeVisible({ timeout: 60_000 });
+  try {
+    execFileSync("pkill", ["-KILL", "-f", "--", `--kb-home ${home}`]);
+  } catch {
+    /* pkill exits 1 if nothing matched; the expectation below then fails */
+  }
+  await expect(page.getByRole("heading", { name: "KB engine stopped" })).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByRole("heading", { name: "Library" })).toBeVisible({ timeout: 60_000 });
+  await app.close();
+});
+
 test("full_journey", async () => {
   test.setTimeout(240_000);
   const shots = path.join(__dirname, "screenshots");

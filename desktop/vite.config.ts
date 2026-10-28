@@ -7,5 +7,5 @@ export default defineConfig({
   base: "./",
   resolve: { alias: { "@": path.resolve(__dirname, "src") } },
   build: { outDir: "dist", emptyOutDir: true },
-  test: { environment: "jsdom", globals: true, setupFiles: ["./src/test-setup.ts"], include: ["src/**/*.test.{ts,tsx}"] },
+  test: { environment: "jsdom", globals: true, setupFiles: ["./src/test-setup.ts"], include: ["src/**/*.test.{ts,tsx}", "electron/**/*.test.ts"] },
 });

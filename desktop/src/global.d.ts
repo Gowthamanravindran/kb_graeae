@@ -7,9 +7,10 @@ declare global {
       openExternal(url: string): Promise<void>;
       openFile(path: string, line?: number): Promise<void>;
       pickFile(filters?: { name: string; extensions: string[] }[]): Promise<string | null>;
-      engineStatus(): Promise<{ ok: boolean; message?: string; log?: string; logPath?: string }>;
+      engineStatus(): Promise<{ ok: boolean; message?: string; log?: string; logPath?: string; stopped?: boolean }>;
       retryEngine(): Promise<void>;
       openLogs(): Promise<void>;
+      onEngineStopped?(cb: () => void): () => void;
     };
   }
 }

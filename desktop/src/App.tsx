@@ -28,13 +28,14 @@ function Main() {
 
 export default function App() {
   const api = useMemo(() => createClient({ baseUrl: window.kb?.baseUrl ?? "", token: window.kb?.token ?? "" }), []);
-  const [engine, setEngine] = useState<{ ok: boolean; message?: string; log?: string } | null>(null);
+  const [engine, setEngine] = useState<{ ok: boolean; message?: string; log?: string; stopped?: boolean } | null>(null);
   useEffect(() => {
     if (location.hash === "#engine-error" && window.kb) void window.kb.engineStatus().then(setEngine);
     else setEngine({ ok: true });
+    return window.kb?.onEngineStopped?.(() => void window.kb!.engineStatus().then(setEngine));
   }, []);
   if (!engine) return null;
   if (!engine.ok)
-    return <EngineError message={engine.message ?? "unknown error"} log={engine.log ?? ""} onRetry={() => void window.kb?.retryEngine()} onOpenLogs={() => void window.kb?.openLogs()} />;
+    return <EngineError message={engine.message ?? "unknown error"} log={engine.log ?? ""} stopped={engine.stopped} onRetry={() => void window.kb?.retryEngine()} onOpenLogs={() => void window.kb?.openLogs()} />;
   return <AppProvider api={api}><Main /></AppProvider>;
 }

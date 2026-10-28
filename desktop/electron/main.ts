@@ -2,12 +2,14 @@ import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { defaultEngineEnv } from "./env";
 import { lockDown } from "./security";
 import { SidecarError, startSidecar, stopSidecar, type Sidecar } from "./sidecar";
 
 let win: BrowserWindow | null = null;
 let engine: Sidecar | null = null;
-let engineError: { message: string; log: string; logPath: string } | null = null;
+let engineError: { message: string; log: string; logPath: string; stopped?: boolean } | null = null;
+let quitting = false;
 
 const repoRoot = path.resolve(__dirname, "..", "..");
 const uiDir = app.isPackaged ? path.join(process.resourcesPath, "ui") : path.join(__dirname, "..", "dist");
@@ -15,7 +17,7 @@ const kbHome = process.env.KB_HOME || path.join(os.homedir(), ".kb");
 const logDir = path.join(app.getPath("userData"), "logs");
 
 function engineCommand(): { command: string; args: string[] } {
-  const common = ["--port", "0", "--kb-home", kbHome, "--ui-dir", uiDir];
+  const common = ["--port", "0", "--kb-home", kbHome, "--ui-dir", uiDir, "--exit-on-stdin-eof"];
   if (process.env.KB_SERVE_CMD) {
     const [command, ...rest] = process.env.KB_SERVE_CMD.split(" ").filter(Boolean);
     return { command, args: [...rest, ...common] };
@@ -28,17 +30,35 @@ async function bootEngine(): Promise<void> {
   engineError = null;
   try {
     const { command, args } = engineCommand();
-    engine = await startSidecar({ command, args, env: process.env, logDir, timeoutMs: Number(process.env.KB_SIDECAR_TIMEOUT_MS) || 30000 });
+    engine = await startSidecar({ command, args, env: defaultEngineEnv(), logDir, timeoutMs: Number(process.env.KB_SIDECAR_TIMEOUT_MS) || 30000 });
     const origin = `http://127.0.0.1:${engine.port}`;
+    const token = engine.token; // captured: `engine` is null once it stops, and this callback must always answer
     session.defaultSession.webRequest.onBeforeSendHeaders({ urls: [`${origin}/*`] }, (details, cb) => {
-      cb({ requestHeaders: { ...details.requestHeaders, "X-KB-Token": engine!.token } });
+      cb({ requestHeaders: { ...details.requestHeaders, "X-KB-Token": token } });
     });
-    engine.proc.on("exit", () => {
+    const started = engine;
+    started.proc.on("exit", (code, signal) => {
+      if (engine !== started) return; // an older engine finishing after a retry
       engine = null;
+      if (quitting) return;
+      engineError = {
+        message: `the engine stopped unexpectedly (${signal ?? `code ${code}`})`,
+        log: tailFile(started.logPath), logPath: started.logPath, stopped: true,
+      };
+      // Tell the open page instead of navigating it away: it shows the error screen with Retry.
+      win?.webContents.send("kb:engine-stopped");
     });
   } catch (e) {
     const err = e as SidecarError;
     engineError = { message: err.message, log: err.logTail ?? "", logPath: err.logPath ?? logDir };
+  }
+}
+
+function tailFile(file: string, lines = 40): string {
+  try {
+    return fs.readFileSync(file, "utf8").split("\n").slice(-lines).join("\n");
+  } catch {
+    return "";
   }
 }
 
@@ -59,7 +79,9 @@ function createWindow(): void {
 
 ipcMain.handle("kb:engine-status", () => (engine ? { ok: true } : { ok: false, ...engineError }));
 ipcMain.handle("kb:retry-engine", async () => {
-  await stopSidecar(engine?.proc ?? null);
+  const old = engine;
+  engine = null;
+  await stopSidecar(old?.proc ?? null);
   await bootEngine();
   load();
 });
@@ -86,9 +108,11 @@ if (!app.requestSingleInstanceLock()) {
     createWindow();
   });
   app.on("window-all-closed", () => app.quit());
-  let quitting = false;
   app.on("before-quit", (event) => {
-    if (quitting || !engine) return;
+    if (quitting || !engine) {
+      quitting = true;
+      return;
+    }
     event.preventDefault();
     quitting = true;
     void stopSidecar(engine.proc).finally(() => app.quit());

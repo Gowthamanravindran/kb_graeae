@@ -103,3 +103,16 @@ def test_status_reports_langfuse_host(tmp_path, monkeypatch):
     app = create_app(ServeSettings(kb_home=tmp_path, token=TOKEN, provider_factory=lambda: FakeProvider()))
     d = TestClient(app, base_url="http://127.0.0.1:1").get("/api/status", headers={"X-KB-Token": TOKEN}).json()
     assert d["langfuse"] == {"configured": True, "host": "http://localhost:3000"}
+
+
+def test_serve_exits_when_parent_closes_stdin(tmp_path):
+    env = {**os.environ, "KB_SERVE_TOKEN": TOKEN, "KB_HOME": str(tmp_path)}
+    p = subprocess.Popen([sys.executable, "-m", "kb.cli", "serve", "--port", "0", "--exit-on-stdin-eof"], env=env,
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    try:
+        assert p.stdout.readline().startswith("KB_SERVE_READY ")
+        p.stdin.close()  # what the OS does when Electron dies, however it dies
+        assert p.wait(15) == 0
+    finally:
+        if p.poll() is None:
+            p.kill()

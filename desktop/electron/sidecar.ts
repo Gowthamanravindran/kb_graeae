@@ -29,11 +29,12 @@ export function startSidecar(o: { command: string; args: string[]; env: NodeJS.P
   return new Promise((resolve, reject) => {
     let proc: ChildProcess;
     try {
-      proc = spawn(o.command, o.args, { env: { ...o.env, KB_SERVE_TOKEN: token }, stdio: ["ignore", "pipe", "pipe"] });
+      proc = spawn(o.command, o.args, { env: { ...o.env, KB_SERVE_TOKEN: token }, stdio: ["pipe", "pipe", "pipe"] /* stdin stays open: the engine exits when we die */ });
     } catch (e) {
       reject(new SidecarError(`could not start the engine: ${(e as Error).message}`, tail(logPath), logPath));
       return;
     }
+    proc.stdin?.on("error", () => {}); // EPIPE when the engine dies; must not become an uncaught main-process error
     let settled = false;
     let buf = "";
     const fail = (msg: string) => {

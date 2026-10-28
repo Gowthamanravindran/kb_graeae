@@ -10,4 +10,9 @@ contextBridge.exposeInMainWorld("kb", {
   engineStatus: () => ipcRenderer.invoke("kb:engine-status"),
   retryEngine: () => ipcRenderer.invoke("kb:retry-engine"),
   openLogs: () => ipcRenderer.invoke("kb:open-logs"),
+  onEngineStopped: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on("kb:engine-stopped", listener);
+    return () => ipcRenderer.removeListener("kb:engine-stopped", listener);
+  },
 });

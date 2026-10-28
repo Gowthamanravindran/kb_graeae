@@ -310,6 +310,8 @@ def serve(
     port: int = typer.Option(0, "--port", help="0 = any free port"),
     kb_home: Path = typer.Option(None, "--kb-home"),
     ui_dir: Path = typer.Option(None, "--ui-dir", help="Serve the desktop renderer from this folder"),
+    exit_on_stdin_eof: bool = typer.Option(False, "--exit-on-stdin-eof",
+                                           help="Stop when stdin closes (the desktop app holds it open)"),
 ) -> None:
     """Run the local API for KB Desktop (127.0.0.1 only; needs KB_SERVE_TOKEN)."""
     import json
@@ -338,7 +340,16 @@ def serve(
         sys.stdout.flush()
 
     threading.Thread(target=announce, daemon=True).start()
+    if exit_on_stdin_eof:
+        def watch_parent() -> None:
+            while sys.stdin.buffer.read(4096):
+                pass
+            server.should_exit = True  # parent gone (quit, crash or kill): don't keep spending Claude usage
+
+        threading.Thread(target=watch_parent, daemon=True).start()
     server.run()
+    if exit_on_stdin_eof:
+        os._exit(0)  # don't wait for running jobs: nobody is left to read their results
 
 
 def main() -> None:

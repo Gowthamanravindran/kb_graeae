@@ -43,3 +43,12 @@ test("useJob polls until done and stops after unmount", async () => {
   expect((globalThis.fetch as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(before);
   vi.useRealTimers();
 });
+
+test("useJob gives up when the engine stops answering", async () => {
+  const { renderHook, waitFor } = await import("@testing-library/react");
+  const { useJob } = await import("./useJob");
+  const api = { job: vi.fn(async () => { throw new TypeError("Failed to fetch"); }) } as unknown as Parameters<typeof useJob>[0];
+  const { result } = renderHook(() => useJob(api, "j1", 5));
+  await waitFor(() => expect(result.current.failed).toBe(true));
+  expect(result.current.job?.error).toMatch(/Lost contact with the KB engine/);
+});
