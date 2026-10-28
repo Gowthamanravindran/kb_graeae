@@ -44,3 +44,4 @@
 - question: How is a new chapter created?
   expect_files:
     - sop-web:src/pages/Chapters/CreateChapterModal/create-chapter.graphql.ts
+    - sop-backend:src/module/sop/resolvers.ts

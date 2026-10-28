@@ -213,3 +213,12 @@ def test_no_reuse_flag_forces_fresh_trace(tmp_path):
     save_flow(store, cos)
     out = nodes.understand({"question": "How does scheduling work in tasks?", "no_reuse": True}, make_deps(store, cos, FakeProvider()))
     assert not out.get("reused_flow_id")
+
+
+def test_trace_prompt_asks_to_cite_graphql_operation_for_requests(tmp_path):
+    store, cos = build_pack(tmp_path)
+    p = FakeProvider([trace_reply(GOOD_STEPS)])
+    nodes.trace({"question": "q", "module_ids": ["tasks"], "shortlist": ["mini-fe:src/tasks/task.graphql.ts#op:AddTask"]},
+                make_deps(store, cos, p))
+    pr = p.requests[0].prompt
+    assert "graphql_op" in pr and "cite the operation's definition" in pr

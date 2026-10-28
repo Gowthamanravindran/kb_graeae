@@ -207,6 +207,8 @@ def trace(state: AgentState, deps) -> dict:
         parts.append("Glossary:\n" + deps.context[:6000])
     parts.append("Return 3-12 steps in the order they happen, UI steps first. Every step must cite the repo, "
                  "the file path relative to that repo's root, and the line range you read. "
+                 "For the step where the app sends a request to the server, cite the operation's definition "
+                 "(the graphql_op entries in the code map) so readers see exactly which request links UI and server. "
                  "If you could not find part of the flow, say so in the answer instead of guessing.")
 
     roots = [co.root for co in deps.checkouts.values()]
