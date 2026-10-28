@@ -8,12 +8,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from kb import __version__
 from kb.errors import KbError, LLMUnavailable, RegistryUnavailable
+from kb.serve.jobs import JobRunner, submit_or_409
 from kb.serve.security import TokenHostMiddleware
 from kb.serve.workspace import Workspace
 
@@ -89,6 +90,13 @@ def create_app(settings: ServeSettings) -> FastAPI:
     app.state.settings = settings
     ws = Workspace(settings.kb_home)
     app.state.workspace = ws
+    jobs = JobRunner(log_dir=Path(settings.kb_home) / "logs")
+    app.state.jobs = jobs
+
+    @app.exception_handler(HTTPException)
+    async def http_error(request: Request, exc: HTTPException):
+        body = exc.detail if isinstance(exc.detail, dict) else {"detail": exc.detail}
+        return JSONResponse(body, status_code=exc.status_code)
 
     @app.exception_handler(KbError)
     async def kb_error(request: Request, exc: KbError):
@@ -145,5 +153,33 @@ def create_app(settings: ServeSettings) -> FastAPI:
         me = sc.RegistryClient(url, body.token, http=sc.make_http(url)).me()
         save_token(settings.kb_home, url, body.token, "static")
         return {"email": me["email"]}
+
+    @app.get("/api/jobs")
+    def list_jobs(kind: str | None = None, active: int = 0) -> list[dict]:
+        return [j.to_dict() for j in jobs.list(kind, bool(active))]
+
+    @app.get("/api/jobs/{job_id}")
+    def get_job(job_id: str) -> dict:
+        j = jobs.get(job_id)
+        if j is None:
+            raise HTTPException(404, "no such job")
+        return j.to_dict()
+
+    class SsoIn(BaseModel):
+        registry: str
+
+    @app.post("/api/login/sso")
+    def login_sso(body: SsoIn) -> dict:
+        from kb.sync import client as sc
+        from kb.sync import oidc
+        from kb.sync.credentials import norm_url, save_token
+
+        url = norm_url(body.registry)
+
+        def run(rep):
+            got = oidc.device_login(url, sc.make_http(url), out=lambda text: rep.step(text))
+            save_token(settings.kb_home, url, got["token"], "oidc", got.get("refresh_token"), got.get("expires_at"))
+            return {"email": settings.client(registry=url).me()["email"]}
+        return {"job_id": submit_or_409(jobs, "login", run, key=f"login:{url}").id}
 
     return app
