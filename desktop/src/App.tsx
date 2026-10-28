@@ -4,6 +4,7 @@ import { EngineError } from "./components/EngineError";
 import { Sidebar } from "./components/Sidebar";
 import { AppProvider, useApp } from "./state";
 import { Library } from "./views/Library";
+import { MapView } from "./views/MapView";
 
 function Placeholder({ title }: { title: string }) {
   return <h1 className="text-[26px] font-bold">{title}</h1>;
@@ -16,7 +17,7 @@ function Main() {
       <Sidebar />
       <main className="min-w-0 flex-1 overflow-y-auto px-10 py-8">
         {view === "library" && <Library />}
-        {view === "map" && <Placeholder title="Map" />}
+        {view === "map" && <MapView />}
         {view === "ask" && <Placeholder title="Ask" />}
         {view === "memory" && <Placeholder title="Memory" />}
       </main>

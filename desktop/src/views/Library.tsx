@@ -78,6 +78,7 @@ export function Library() {
   const [jobs, setJobs] = useState<Record<string, string>>({});
   const [analysing, setAnalysing] = useState(false);
   const [login, setLogin] = useState(false);
+  const [dismissed, setDismissed] = useState<string | null>(null);
   const load = useCallback(async () => {
     if (!project) return;
     try {
@@ -116,8 +117,11 @@ export function Library() {
           <Button onClick={() => setAnalysing(true)}>Analyse a branch</Button>
         </div>
       </div>
-      {(data?.registry_error || error) && (
-        <div role="alert" className="rounded-lg bg-warn-soft px-4 py-3 text-sm text-warn">{error ?? data?.registry_error}</div>
+      {(error ?? data?.registry_error) && dismissed !== (error ?? data?.registry_error) && (
+        <div role="alert" className="flex items-start justify-between gap-4 rounded-lg bg-warn-soft px-4 py-3 text-sm text-warn">
+          <span>{error ?? data?.registry_error}</span>
+          <button type="button" aria-label="Dismiss" className="font-semibold" onClick={() => setDismissed(error ?? data?.registry_error ?? null)}>×</button>
+        </div>
       )}
       {current && (
         <Card className="flex flex-wrap items-center gap-6 px-6 py-5">
