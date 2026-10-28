@@ -41,7 +41,46 @@ def current_user(request: Request, s: Session = Depends(get_session)) -> User:
     return user
 
 
+def signing_key(app, token: str):
+    """Public key for a JWT from the issuer's JWKS (discovered once, cached on the app)."""
+    import httpx
+    import jwt
+
+    client = getattr(app.state, "jwk_client", None)
+    if client is None:
+        issuer = app.state.settings.oidc_issuer.rstrip("/")
+        meta = httpx.get(f"{issuer}/.well-known/openid-configuration", timeout=10).json()
+        client = app.state.jwk_client = jwt.PyJWKClient(meta["jwks_uri"], cache_keys=True)
+    return client.get_signing_key_from_jwt(token).key
+
+
+def _oidc_user(request: Request, s: Session, token: str) -> User | None:
+    import jwt
+
+    st = request.app.state.settings
+    try:
+        claims = jwt.decode(token, signing_key(request.app, token), algorithms=["RS256", "ES256"],
+                            audience=st.oidc_audience, issuer=st.oidc_issuer,
+                            options={"require": ["exp", "sub", "iss"]})
+    except Exception:  # bad signature, audience, expiry, unreachable JWKS…: all mean "not authenticated"
+        return None
+    sub, email = claims.get("sub"), claims.get("email")
+    if not sub or not email:
+        return None
+    user = s.query(User).filter_by(oidc_sub=sub).one_or_none()
+    if user is None:
+        user = s.query(User).filter_by(email=email).one_or_none()
+        if user is None:
+            user = User(email=email, name=claims.get("name", ""))
+            s.add(user)
+        user.oidc_sub = sub
+        s.commit()
+    return user
+
+
 def authenticate(request: Request, s: Session, token: str) -> User | None:
+    if request.app.state.settings.oidc_issuer and token.count(".") == 2:
+        return _oidc_user(request, s, token)
     row = s.query(ApiToken).filter_by(token_hash=hash_token(token)).one_or_none()
     if row is None:
         return None

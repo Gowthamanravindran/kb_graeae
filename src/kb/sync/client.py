@@ -110,5 +110,21 @@ def client_for(cfg=None, registry: str | None = None, kb_home: Path | None = Non
     from kb.packs.store import default_kb_home
 
     url = resolve_url(cfg, registry)
-    cred = get_token(kb_home or default_kb_home(), url)
-    return RegistryClient(url, cred["token"] if cred else None, http=make_http(url))
+    home = kb_home or default_kb_home()
+    cred = get_token(home, url)
+    http = make_http(url)
+    on_refresh = None
+    if cred and cred.get("kind") == "oidc" and cred.get("refresh_token"):
+        def on_refresh() -> str | None:
+            import time
+
+            from kb.sync import oidc
+            from kb.sync.credentials import save_token
+
+            current = get_token(home, url) or cred
+            if (current.get("expires_at") or 0) - time.time() > 60:
+                return current["token"]
+            got = oidc.refresh(url, current["refresh_token"], http)
+            save_token(home, url, got["token"], "oidc", got["refresh_token"], got["expires_at"])
+            return got["token"]
+    return RegistryClient(url, cred["token"] if cred else None, http=http, on_refresh=on_refresh)
