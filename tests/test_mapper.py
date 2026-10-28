@@ -43,7 +43,8 @@ def test_cluster_deterministic():
 
 
 def test_linked_folders_merge():
-    clusters = cluster_graph(graph(), min_size=1)
+    # resolution 1: on a 3-folder toy graph the SOP-tuned default (4) splits any pair
+    clusters = cluster_graph(graph(), min_size=1, resolution=1.0)
     by_member = {m: c.id for c in clusters for m in c.members}
     assert by_member["fe:src/tasks/create/f0.ts"] == by_member["be:src/module/tasks/f0.ts"]
     assert by_member["be:src/module/audits/f0.ts"] != by_member["be:src/module/tasks/f0.ts"]

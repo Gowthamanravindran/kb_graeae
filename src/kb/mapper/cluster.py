@@ -3,7 +3,8 @@
 1. Seed: one group per (repo, first two folders under src/app/lib).
 2. Group graph: edge weight = number of code edges between different groups; linker edges count
    LINKER_WEIGHT times, so a frontend folder and the backend folder it calls end up together.
-3. Louvain communities (seed=0) on the group graph.
+3. Louvain communities (seed=0, resolution=RESOLUTION) on the group graph. Resolution 4 was
+   tuned on the SOP repos: at 1, shared UI folders glued unrelated features into 5k-node blobs.
 4. Communities smaller than `min_size` members join their most-connected neighbour;
    then the smallest merge into neighbours until at most `max_clusters` remain.
 Deterministic for the same graph.
@@ -21,6 +22,7 @@ from kb.graph.model import CodeGraph
 
 LINKER_KINDS = {"sends_graphql", "handled_by", "routes_to", "enqueues", "consumed_by"}
 LINKER_WEIGHT = 5
+RESOLUTION = 4.0
 _ROOTS = {"src", "app", "lib"}
 
 
@@ -42,7 +44,7 @@ def _slug(key: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", key.split(":", 1)[-1].lower()).strip("-") or "root"
 
 
-def cluster_graph(g: CodeGraph, max_clusters: int = 40, min_size: int = 5) -> list[Cluster]:
+def cluster_graph(g: CodeGraph, max_clusters: int = 60, min_size: int = 5, resolution: float = RESOLUTION) -> list[Cluster]:
     nodes = sorted(g.nodes(), key=lambda n: n.id)
     group_of = {n.id: folder_key(n.repo, n.file) for n in nodes}
     members: dict[str, list[str]] = defaultdict(list)
@@ -62,7 +64,7 @@ def cluster_graph(g: CodeGraph, max_clusters: int = 40, min_size: int = 5) -> li
     for (a, b), weight in sorted(w.items()):
         gg.add_edge(a, b, weight=weight)
 
-    comms = [sorted(c) for c in nx.community.louvain_communities(gg, weight="weight", seed=0)]
+    comms = [sorted(c) for c in nx.community.louvain_communities(gg, weight="weight", resolution=resolution, seed=0)]
     comms.sort(key=lambda c: c[0])
 
     def size(c: list[str]) -> int:
