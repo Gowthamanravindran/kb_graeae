@@ -45,7 +45,7 @@ def postgres_url():
         subprocess.run(cmd, check=True, capture_output=True)
 
     port = _free_port()
-    run(str(bindir / "initdb"), "-D", str(data / "db"), "-A", "trust", "-U", "kb")
+    run(str(bindir / "initdb"), "-D", str(data / "db"), "-A", "trust", "-U", "kb", "-E", "UTF8", "--no-locale")
     run(str(bindir / "pg_ctl"), "-D", str(data / "db"), "-o", f"-p {port} -k {data} -c listen_addresses=127.0.0.1",
         "-l", str(data / "log"), "-w", "start")
     try:
