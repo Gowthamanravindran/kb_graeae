@@ -346,6 +346,23 @@ def create_app(settings: ServeSettings) -> FastAPI:
         lf.flush()
         return {"recorded": True}
 
+    @app.get("/api/projects/{name}/branches/{branch:path}/citation")
+    def citation(name: str, branch: str, repo: str, file: str, line: int = 1) -> dict:
+        from kb.ask import available_checkouts
+
+        cfg = ws.config(name)
+        pack = settings.store().load(cfg.project, branch)
+        checkouts, _ = available_checkouts(cfg, branch, settings.store(), pack.manifest.commits)
+        co = checkouts.get(repo)
+        not_found = HTTPException(404, f"file not found in your checkout of {repo}")
+        if co is None or Path(file).is_absolute():
+            raise not_found
+        root = Path(co.root).resolve()
+        target = (root / file).resolve()
+        if not target.is_relative_to(root) or not target.is_file():
+            raise not_found
+        return {"path": str(target), "line": max(1, line)}
+
     @app.get("/api/jobs")
     def list_jobs(kind: str | None = None, active: int = 0) -> list[dict]:
         return [j.to_dict() for j in jobs.list(kind, bool(active))]
