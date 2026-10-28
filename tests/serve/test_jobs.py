@@ -92,3 +92,39 @@ def test_job_survives_and_is_listed(serve):
     d = reloaded.get(f"/api/jobs/{job.id}").json()
     assert d["state"] == "done" and d["result"] == {"answer": "A"}
     assert reloaded.get("/api/jobs/nope").status_code == 404
+
+
+def test_writer_blocks_readers_on_same_branch(serve):
+    from kb.serve.jobs import branch_scope
+
+    c, *_ = serve
+    gate = threading.Event()
+    c.app.state.jobs.submit("analyze", lambda rep: gate.wait(5), scope=branch_scope("mini", "main"), exclusive=True)
+    try:
+        base = "/api/projects/mini/branches/main"
+        c.post("/api/projects", json={"config_path": str(serve[4])})
+        for method, path, body in [("post", "/ask", {"question": "q"}), ("post", "/pull", {"force": False}),
+                                   ("post", "/analyze", {"resume": False}), ("post", "/push", None),
+                                   ("get", "/map", None), ("get", "/memory", None)]:
+            r = getattr(c, method)(base + path, **({"json": body} if body is not None else {}))
+            assert r.status_code == 409, (path, r.status_code, r.text)
+            assert "being updated" in r.text
+        assert c.get("/api/projects/mini/branches/other/map").status_code != 409  # other branches unaffected
+    finally:
+        gate.set()
+
+
+def test_reader_blocks_writer_on_same_branch(serve):
+    from kb.serve.jobs import branch_scope
+
+    c, *_ = serve
+    c.post("/api/projects", json={"config_path": str(serve[4])})
+    gate = threading.Event()
+    c.app.state.jobs.submit("ask", lambda rep: gate.wait(5), scope=branch_scope("mini", "main"))
+    try:
+        r = c.post("/api/projects/mini/branches/main/analyze", json={"resume": False})
+        assert r.status_code == 409 and "still running" in r.text
+        r = c.post("/api/projects/mini/branches/main/ask", json={"question": "q2"})
+        assert r.status_code == 200  # readers share
+    finally:
+        gate.set()

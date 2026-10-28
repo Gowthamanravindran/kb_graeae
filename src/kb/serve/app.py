@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from kb import __version__
 from kb.errors import KbError, LLMUnavailable, RegistryUnavailable
-from kb.serve.jobs import JobRunner, submit_or_409
+from kb.serve.jobs import BranchBusy, JobRunner, branch_scope, submit_or_409
 from kb.serve.security import TokenHostMiddleware
 from kb.serve.workspace import Workspace
 
@@ -190,6 +190,12 @@ def create_app(settings: ServeSettings) -> FastAPI:
     def _branch_key(name: str, branch: str) -> str:
         return f"analyze:{name}@{branch}"
 
+    def _readable(project: str, branch: str) -> None:
+        try:
+            jobs.check_readable(branch_scope(project, branch))
+        except BranchBusy as e:
+            raise HTTPException(409, detail=str(e))
+
     @app.get("/api/projects/{name}/branches")
     def branches(name: str) -> dict:
         from kb.serve.views import branch_rows
@@ -218,7 +224,8 @@ def create_app(settings: ServeSettings) -> FastAPI:
             m = run_analyze(cfg, branch, settings.store(), settings.provider(), make_tracer(cfg), resume=body.resume,
                             author=_author(), progress=lambda text, frac: rep.step(text, frac))
             return {"status": m.status, "stats": m.stats, "failed_modules": m.failed_modules}
-        return {"job_id": submit_or_409(jobs, "analyze", run, key=_branch_key(cfg.project, branch)).id}
+        return {"job_id": submit_or_409(jobs, "analyze", run, key=_branch_key(cfg.project, branch),
+                                          scope=branch_scope(cfg.project, branch), exclusive=True).id}
 
 
     def _ask_job(cfg, branch: str, question: str, from_qa=None, no_reuse=False):
@@ -236,11 +243,12 @@ def create_app(settings: ServeSettings) -> FastAPI:
             st = run_ask(cfg, branch, question, store, settings.provider(), stats, from_qa=from_qa,
                          author=_author(), no_reuse=no_reuse)
             return ask_payload(st, stats, time.monotonic() - t0, store.load(cfg.project, branch))
-        return {"job_id": jobs.submit("ask", run).id}
+        return {"job_id": submit_or_409(jobs, "ask", run, scope=branch_scope(cfg.project, branch)).id}
 
     @app.post("/api/projects/{name}/branches/{branch:path}/ask")
     def ask(name: str, branch: str, body: AskIn) -> dict:
         cfg = ws.config(name)
+        _readable(cfg.project, branch)
         settings.store().load(cfg.project, branch)  # 400 now if there is no pack
         return _ask_job(cfg, branch, body.question, body.from_qa, body.no_reuse)
 
@@ -255,7 +263,8 @@ def create_app(settings: ServeSettings) -> FastAPI:
         def run(rep):
             rep.step("Uploading the analysis", 0.2)
             return push_pack(cfg, branch, settings.store(), settings.client(cfg))
-        return {"job_id": submit_or_409(jobs, "push", run, key=f"push:{cfg.project}@{branch}").id}
+        return {"job_id": submit_or_409(jobs, "push", run, key=f"push:{cfg.project}@{branch}",
+                                          scope=branch_scope(cfg.project, branch)).id}
 
 
     @app.post("/api/projects/{name}/branches/{branch:path}/pull")
@@ -267,7 +276,8 @@ def create_app(settings: ServeSettings) -> FastAPI:
         def run(rep):
             rep.step("Downloading the analysis", 0.2)
             return pull_pack(cfg.project, branch, settings.store(), settings.client(cfg), cfg=cfg, force=body.force)
-        return {"job_id": submit_or_409(jobs, "pull", run, key=f"pull:{cfg.project}@{branch}").id}
+        return {"job_id": submit_or_409(jobs, "pull", run, key=f"pull:{cfg.project}@{branch}",
+                                          scope=branch_scope(cfg.project, branch), exclusive=True).id}
 
     # ---------- map, memory, publish, retrace, feedback ----------
 
@@ -276,6 +286,7 @@ def create_app(settings: ServeSettings) -> FastAPI:
         from kb.serve.views import map_view
 
         cfg = ws.config(name)
+        _readable(cfg.project, branch)
         return map_view(cfg, settings.store().load(cfg.project, branch))
 
     @app.get("/api/projects/{name}/branches/{branch:path}/memory")
@@ -284,10 +295,12 @@ def create_app(settings: ServeSettings) -> FastAPI:
         from kb.sync.outbox import Outbox
 
         cfg = ws.config(name)
+        _readable(cfg.project, branch)
         queued = {i["id"] for i in Outbox(settings.kb_home).pending(cfg.project, branch)}
         return memory_view(settings.store().load(cfg.project, branch), queued)
 
     def _qa(cfg, branch: str, qa_id: str):
+        _readable(cfg.project, branch)
         pack = settings.store().load(cfg.project, branch)
         qa = next((q for q in pack.qa if q.id == qa_id), None)
         if qa is None:
@@ -309,6 +322,7 @@ def create_app(settings: ServeSettings) -> FastAPI:
     @app.post("/api/projects/{name}/branches/{branch:path}/suggestions/{sid}/run")
     def run_suggestion(name: str, branch: str, sid: str) -> dict:
         cfg = ws.config(name)
+        _readable(cfg.project, branch)
         pack = settings.store().load(cfg.project, branch)
         sug = next((x for x in pack.suggestions if x.id == sid), None)
         if sug is None:
@@ -325,6 +339,7 @@ def create_app(settings: ServeSettings) -> FastAPI:
 
         cfg = ws.config(name)
         _need_registry(cfg)
+        _readable(cfg.project, branch)
         return publish_items(cfg, branch, settings.store(), settings.client(cfg), body.qa_ids, body.notes)
 
     @app.post("/api/projects/{name}/branches/{branch:path}/sync")

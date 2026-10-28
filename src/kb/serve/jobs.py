@@ -31,10 +31,20 @@ class Job:
     result: Any = None
     error: str | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    scope: str | None = None
+    exclusive: bool = False
 
     def to_dict(self) -> dict:
         return {k: getattr(self, k) for k in ("id", "kind", "key", "state", "step", "progress", "result", "error",
                                               "created_at")}
+
+
+def branch_scope(project: str, branch: str) -> str:
+    return f"{project}@{branch}"
+
+
+class BranchBusy(Exception):
+    """A writer (analyse/pull) and readers (ask/push/views) would overlap on one branch's pack."""
 
 
 class JobConflict(Exception):
@@ -73,13 +83,19 @@ class JobRunner:
             h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
             self.log.addHandler(h)
 
-    def submit(self, kind: str, fn: Callable[[Reporter], Any], key: str | None = None) -> Job:
+    def submit(self, kind: str, fn: Callable[[Reporter], Any], key: str | None = None,
+               scope: str | None = None, exclusive: bool = False) -> Job:
+        """`scope` names the branch pack a job touches: an `exclusive` job (rewrites the pack) never
+        overlaps any other job on that scope; shared jobs run together but not beside an exclusive one."""
         with self.lock:
             if key is not None:
                 for j in self.jobs.values():
                     if j.key == key and j.state in ACTIVE:
                         raise JobConflict(j)
+            if scope is not None:
+                self._check_scope(scope, exclusive)
             job = Job(id=uuid.uuid4().hex[:12], kind=kind, key=key)
+            job.scope, job.exclusive = scope, exclusive
             self.jobs[job.id] = job
         self.pool.submit(self._run, job, fn)
         return job
@@ -96,6 +112,21 @@ class JobRunner:
                 self.log.error("job %s (%s) failed:\n%s", job.id, job.kind, traceback.format_exc())
             job.state = "failed"
 
+    def _check_scope(self, scope: str, exclusive: bool) -> None:
+        branch = scope.split("@", 1)[-1]
+        for j in self.jobs.values():
+            if j.state not in ACTIVE or j.scope != scope:
+                continue
+            if j.exclusive:
+                raise BranchBusy(f"{branch} is being updated (an analysis or pull is running); try again when it finishes")
+            if exclusive:
+                raise BranchBusy(f"{branch} has a question or upload still running; try again when it finishes")
+
+    def check_readable(self, scope: str) -> None:
+        """Raise BranchBusy if an exclusive job is rewriting this branch's pack."""
+        with self.lock:
+            self._check_scope(scope, exclusive=False)
+
     def get(self, job_id: str) -> Job | None:
         return self.jobs.get(job_id)
 
@@ -105,8 +136,11 @@ class JobRunner:
         return sorted(out, key=lambda j: j.created_at)
 
 
-def submit_or_409(runner: JobRunner, kind: str, fn, key: str | None = None) -> Job:
+def submit_or_409(runner: JobRunner, kind: str, fn, key: str | None = None,
+                  scope: str | None = None, exclusive: bool = False) -> Job:
     try:
-        return runner.submit(kind, fn, key)
+        return runner.submit(kind, fn, key, scope=scope, exclusive=exclusive)
+    except BranchBusy as e:
+        raise HTTPException(409, detail=str(e))
     except JobConflict as e:
         raise HTTPException(409, detail={"detail": "already running", "job_id": e.job.id})
