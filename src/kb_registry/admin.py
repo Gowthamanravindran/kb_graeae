@@ -83,3 +83,42 @@ def token(email: str, name: str = typer.Option("", "--name")):
         t = _issue(s, _user(s, email), name)
     typer.echo(f"new API token for {email} (shown once):")
     typer.echo(t)
+
+
+@app.command()
+def revoke(email: str, project: str):
+    """Remove EMAIL's role on PROJECT."""
+    with _session() as s:
+        u = _user(s, email)
+        p = s.query(Project).filter_by(name=project).one_or_none()
+        if p is None:
+            _fail(f"no project {project}")
+        m = s.get(Membership, (u.id, p.id))
+        if m is None:
+            _fail(f"{email} has no role on {project}")
+        s.delete(m)
+        s.commit()
+    typer.echo(f"{email} no longer has access to {project}")
+
+
+@app.command("revoke-tokens")
+def revoke_tokens(email: str):
+    """Delete every API token EMAIL has (they must get a new one to use the registry)."""
+    with _session() as s:
+        u = _user(s, email)
+        n = s.query(ApiToken).filter_by(user_id=u.id).delete()
+        s.commit()
+    typer.echo(f"revoked {n} token(s) for {email}")
+
+
+@app.command("disable-user")
+def disable_user(email: str):
+    """Block EMAIL entirely: tokens and roles removed, single sign-on refused. Their published answers stay."""
+    with _session() as s:
+        u = _user(s, email)
+        s.query(ApiToken).filter_by(user_id=u.id).delete()
+        s.query(Membership).filter_by(user_id=u.id).delete()
+        u.disabled = True
+        u.is_admin = False
+        s.commit()
+    typer.echo(f"disabled {email}")

@@ -56,6 +56,14 @@ def check_unsafe_paths(pack_dir: Path, paths) -> None:
             raise KbError(f"unsafe path from registry: {rel!r}")
 
 
+def _overlay_file(pack_dir: Path, sub: str, item_id: str) -> Path:
+    from kb_registry.paths import is_safe_id
+
+    if not is_safe_id(item_id):
+        raise KbError(f"unsafe overlay id: {item_id!r}")
+    return Path(pack_dir) / "overlay" / sub / f"{item_id}.json"
+
+
 class PackStore:
     def __init__(self, kb_home: Path | None = None) -> None:
         self.kb_home = Path(kb_home) if kb_home else default_kb_home()
@@ -150,10 +158,10 @@ class PackStore:
         )
 
     def save_flow(self, project: str, branch: str, flow: Flow) -> None:
-        _write_json(self.pack_dir(project, branch) / "overlay" / "flows" / f"{flow.id}.json", flow.model_dump(mode="json"))
+        _write_json(_overlay_file(self.pack_dir(project, branch), "flows", flow.id), flow.model_dump(mode="json"))
 
     def save_qa(self, project: str, branch: str, qa: QAItem) -> None:
-        _write_json(self.pack_dir(project, branch) / "overlay" / "qa" / f"{qa.id}.json", qa.model_dump(mode="json"))
+        _write_json(_overlay_file(self.pack_dir(project, branch), "qa", qa.id), qa.model_dump(mode="json"))
 
     def add_suggestions(self, project: str, branch: str, items: list[Suggestion]) -> None:
         p = self.pack_dir(project, branch) / "overlay" / "suggestions.json"
@@ -163,4 +171,4 @@ class PackStore:
         _write_json(p, existing)
 
     def save_module_note(self, project: str, branch: str, module_id: str, text: str) -> None:
-        _write_json(self.pack_dir(project, branch) / "overlay" / "module_notes" / f"{module_id}.json", {"text": text})
+        _write_json(_overlay_file(self.pack_dir(project, branch), "module_notes", module_id), {"text": text})

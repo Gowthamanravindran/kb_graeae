@@ -26,6 +26,21 @@ class Outbox:
         drop = set(ids)
         self._write(project, branch, [i for i in self.pending(project, branch) if i["id"] not in drop])
 
+    def _rejected_path(self, project: str, branch: str) -> Path:
+        return self.dir / f"{project}@{branch.replace('/', '__')}.rejected.json"
+
+    def rejected(self, project: str, branch: str) -> list[dict]:
+        p = self._rejected_path(project, branch)
+        return json.loads(p.read_text()) if p.exists() else []
+
+    def reject(self, project: str, branch: str, items: list[dict], reason: str) -> None:
+        """Move items the registry refused out of the queue, so they stop blocking every sync."""
+        p = self._rejected_path(project, branch)
+        kept = self.rejected(project, branch) + [{**i, "reason": reason} for i in items]
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(kept, indent=1))
+        self.clear(project, branch, [i["id"] for i in items])
+
     def _write(self, project: str, branch: str, items: list[dict]) -> None:
         p = self._path(project, branch)
         if not items:

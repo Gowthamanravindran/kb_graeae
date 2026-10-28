@@ -65,12 +65,13 @@ class FakeClient:
         return {"config_yaml": ""}
 
 
-@pytest.mark.parametrize("bad", ["../../evil.json", "/abs/evil.json", "base/graph/../../x.json", "base/index.sqlite"])
+@pytest.mark.parametrize("bad", ["../../evil.json", "ABS/evil.json", "base/graph/../../x.json", "base/index.sqlite"])
 def test_pull_rejects_unsafe_paths(tmp_path, bad):
+    bad = bad.replace("ABS", str(tmp_path / "abs"))  # absolute path inside this test's own folder
     store = PackStore(tmp_path / "home")
     with pytest.raises(KbError, match="unsafe path from registry"):
         pull_pack("mini", "main", store, FakeClient({"base/links.json": "a" * 64, bad: "b" * 64}))
-    assert not (tmp_path / "evil.json").exists() and not Path("/abs/evil.json").exists()
+    assert not (tmp_path / "evil.json").exists() and not (tmp_path / "abs" / "evil.json").exists()
     assert not (store.pack_dir("mini", "main") / "base" / "links.json").exists()
 
 

@@ -235,6 +235,7 @@ def pull(
     branch: str = typer.Option(..., "--branch", "-b"),
     project: str = typer.Option(None, "--project"),
     registry: str = typer.Option(None, "--registry"),
+    force: bool = typer.Option(False, "--force", help="Replace a local analysis that was never pushed"),
 ) -> None:
     """Download an analysed branch (and everything shared on it) from the registry."""
     from kb.config import load_config
@@ -248,7 +249,7 @@ def pull(
     if not name:
         raise ConfigError("give a kb.yaml, or --project and --registry")
     store = PackStore()
-    out = pull_pack(name, branch, store, sc.client_for(cfg, registry), cfg=cfg)
+    out = pull_pack(name, branch, store, sc.client_for(cfg, registry), cfg=cfg, force=force)
     for w in out["warnings"]:
         typer.echo(f"warning: {w}", err=True)
     typer.echo(f"pulled {name}@{branch} version {out['version']}: {out['modules']} modules, "
@@ -296,7 +297,10 @@ def sync(
 
     cfg = load_config(config)
     store = PackStore()
-    sent = flush_outbox(cfg.project, branch, sc.client_for(cfg), store)
+    warnings: list[str] = []
+    sent = flush_outbox(cfg.project, branch, sc.client_for(cfg), store, warnings)
+    for w in warnings:
+        typer.echo(f"warning: {w}", err=True)
     left = len(Outbox(store.kb_home).pending(cfg.project, branch))
     typer.echo(f"sent {sent} queued items" + (f"; {left} still queued (registry unreachable)" if left else ""))
 

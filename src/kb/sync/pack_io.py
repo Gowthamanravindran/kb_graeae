@@ -29,8 +29,14 @@ def apply_overlay(store, project: str, branch: str, items: list[dict]) -> tuple[
     written, warnings = 0, []
     notes: dict[str, tuple[str, str]] = {}
     suggestions = []
+    from kb_registry.paths import is_safe_id
+
     for it in items:
-        kind, payload = it["kind"], it["payload"]
+        kind, payload = it.get("kind"), it.get("payload") or {}
+        ident = payload.get("module_id") if kind == "module_note" else payload.get("id")
+        if not is_safe_id(str(it.get("id", ""))) or not is_safe_id(str(ident or "")):
+            warnings.append(f"skipped a shared {kind} with an unsafe id from the registry: {it.get('id')!r}")
+            continue
         if kind in ("qa", "flow"):
             model = QAItem if kind == "qa" else Flow
             obj = model.model_validate(payload)

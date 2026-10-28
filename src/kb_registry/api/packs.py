@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from kb.packs.model import Manifest, commits_key
 from kb_registry.auth import current_user, get_session, require_role
 from kb_registry.models import BaseFile, BaseRow, Blob, OverlayItem, User
-from kb_registry.paths import is_allowed_path
+from kb_registry.paths import is_allowed_path, is_safe_id
 
 router = APIRouter()
 
@@ -86,6 +86,8 @@ def _note_id(module_id: str, text: str) -> str:
 def _validate_item(it: ItemIn) -> dict:
     from kb.packs.model import Flow, QAItem, Suggestion
 
+    if not is_safe_id(it.id):
+        raise HTTPException(400, f"item id {it.id!r} is not allowed (letters, digits, . _ : - only)")
     models = {"qa": QAItem, "flow": Flow, "suggestion": Suggestion}
     if it.kind in models:
         try:
@@ -100,7 +102,7 @@ def _validate_item(it: ItemIn) -> dict:
         return data
     if it.kind == "module_note":
         mid, text = it.payload.get("module_id"), it.payload.get("text")
-        if not isinstance(mid, str) or not isinstance(text, str) or not text.strip():
+        if not isinstance(mid, str) or not is_safe_id(mid) or not isinstance(text, str) or not text.strip():
             raise HTTPException(400, f"item {it.id}: module_note needs module_id and text")
         if it.id != _note_id(mid, text):
             raise HTTPException(400, f"item {it.id}: module_note id must be {_note_id(mid, text)}")

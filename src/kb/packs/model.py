@@ -28,6 +28,7 @@ class Manifest(BaseModel):
     status: Literal["incomplete", "complete"]
     stats: dict[str, int] = Field(default_factory=dict)
     failed_modules: list[str] = Field(default_factory=list)
+    synced: bool = False  # True once this base came from / went to a registry
 
 
 class Module(BaseModel):

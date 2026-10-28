@@ -56,6 +56,23 @@ and `KB_REGISTRY_OIDC_AUDIENCE` (the `aud` your tokens carry). Users run `kb log
 a code in the browser. Their first login creates their account with no access; an admin grants roles.
 API tokens keep working alongside SSO.
 
+## TLS
+
+API tokens travel in every request, so never expose port 8080 beyond the machine without TLS. Put
+the registry behind a reverse proxy that terminates HTTPS (nginx, Caddy, Traefik, or your cloud
+load balancer), publish only the proxy, and point clients at `https://…`. Remove the `8080:8080`
+port mapping (or bind it to `127.0.0.1:8080:8080`) once the proxy is in place. The proxy is also
+where to add request-rate limits; the registry itself caps request bodies (8 MB JSON, ~210 MB
+blob uploads).
+
+## Removing access
+
+```bash
+docker compose exec registry kb-registry admin revoke dev@corp sop     # drop one project role
+docker compose exec registry kb-registry admin revoke-tokens dev@corp  # kill all their API tokens
+docker compose exec registry kb-registry admin disable-user dev@corp   # leaver: tokens, roles, SSO all blocked
+```
+
 ## Backups and upgrades
 
 - Back up both the database (`docker compose exec postgres pg_dump -U kb kb > kb.sql`) and the

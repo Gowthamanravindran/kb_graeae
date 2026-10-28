@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
+from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -34,25 +36,35 @@ def missing(body: MissingIn, user: User = Depends(current_user), s: Session = De
     return {"missing": [h for h in dict.fromkeys(body.hashes) if h not in have]}
 
 
+def _store_blob(request: Request, h: str, data: bytes) -> tuple[int, int]:
+    """Blocking part of an upload (decompress + hash, object store write, DB) — runs in a worker thread."""
+    with request.app.state.sessionmaker() as s:
+        existing = s.get(Blob, h)
+        if existing is not None:
+            return 200, existing.size
+        try:
+            size = verify_and_size(h, data)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        request.app.state.store.put(h, data)
+        s.add(Blob(hash=h, size=size))
+        try:
+            s.commit()
+        except IntegrityError:  # a concurrent upload of the same blob won
+            s.rollback()
+            return 200, size
+        return 201, size
+
+
 @router.put("/blobs/{h}")
 async def put_blob(h: str, request: Request, response: Response, user: User = Depends(current_user),
                    s: Session = Depends(get_session)) -> dict:
     if not _HASH.match(h):
         raise HTTPException(400, "blob id must be a lowercase sha256 hex digest")
-    _require_uploader(s, user)
-    existing = s.get(Blob, h)
-    if existing is not None:
-        response.status_code = 200
-        return {"hash": h, "size": existing.size}
-    data = await request.body()
-    try:
-        size = verify_and_size(h, data)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    request.app.state.store.put(h, data)
-    s.add(Blob(hash=h, size=size))
-    s.commit()
-    response.status_code = 201
+    await run_in_threadpool(_require_uploader, s, user)
+    data = await request.body()  # bounded by the BodyLimit middleware
+    status, size = await run_in_threadpool(_store_blob, request, h, data)
+    response.status_code = status
     return {"hash": h, "size": size}
 
 

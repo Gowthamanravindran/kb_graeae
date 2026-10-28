@@ -43,7 +43,7 @@ def test_valid_jwt_authenticates_and_autocreates_user(reg):
 
 
 def test_existing_user_matched_by_email_gets_sub(reg):
-    r = call(reg, tok(email="view@x", sub="sub-v"))
+    r = call(reg, tok(email="view@x", sub="sub-v", email_verified=True))
     assert r.json()["projects"] == {"mini": "viewer"}
 
 

@@ -26,23 +26,35 @@ def _mark_published(store: PackStore, project: str, branch: str, items: list[dic
             store.save_flow(project, branch, f.model_copy(update={"visibility": "published"}))
 
 
-def flush_outbox(project: str, branch: str, client: RegistryClient, store: PackStore) -> int:
-    """Send queued publishes; if the registry is still unreachable they stay queued."""
+def flush_outbox(project: str, branch: str, client: RegistryClient, store: PackStore,
+                 warnings: list[str] | None = None) -> int:
+    """Send queued publishes in chunks. Still unreachable: they stay queued. Refused by the registry
+    (4xx: role, conflict, size): moved to <outbox>.rejected.json with the reason so they stop blocking."""
     from kb.errors import RegistryUnavailable
     from kb.sync.outbox import Outbox
 
     box = Outbox(store.kb_home)
     items = box.pending(project, branch)
-    if not items:
-        return 0
-    try:
-        client.publish(project, branch, items)
-    except RegistryUnavailable:
-        return 0
-    box.clear(project, branch, [i["id"] for i in items])
-    if store.exists(project, branch):
-        _mark_published(store, project, branch, items)
-    return len(items)
+    sent = 0
+    for i in range(0, len(items), 500):
+        chunk = items[i:i + 500]
+        try:
+            client.publish(project, branch, chunk)
+        except RegistryUnavailable:
+            return sent
+        except RegistryError as e:
+            if e.status is None or not 400 <= e.status < 500:
+                raise
+            box.reject(project, branch, chunk, str(e))
+            if warnings is not None:
+                warnings.append(f"registry rejected {len(chunk)} queued items ({e}); kept in "
+                                f"{box.dir}/…rejected.json")
+            continue
+        box.clear(project, branch, [x["id"] for x in chunk])
+        if store.exists(project, branch):
+            _mark_published(store, project, branch, chunk)
+        sent += len(chunk)
+    return sent
 
 
 def publish_items(cfg: ProjectConfig, branch: str, store: PackStore, client: RegistryClient,
@@ -57,7 +69,7 @@ def publish_items(cfg: ProjectConfig, branch: str, store: PackStore, client: Reg
         raise KbError("nothing to publish: give answer ids and/or --notes")
     try:
         _require(client, project, "contributor")
-        flush_outbox(project, branch, client, store)
+        flush_outbox(project, branch, client, store, [])
         res = client.publish(project, branch, items)
     except RegistryUnavailable:
         Outbox(store.kb_home).add(project, branch, items)
@@ -113,21 +125,30 @@ def push_pack(cfg: ProjectConfig, branch: str, store: PackStore, client: Registr
             raise KbError(f"{project}@{branch} at these commits is already on the registry "
                           f"(version {e.body.get('version')}) — run kb pull instead") from e
         raise
-    store.update_manifest(project, branch, version=res["version"], parent=res["parent"])
+    store.update_manifest(project, branch, version=res["version"], parent=res["parent"], synced=True)
     if not client.project(project).get("config_yaml"):
         client.put_config(project, seed_config_text(cfg), seed=True)
     return {"version": res["version"], "parent": res["parent"], "files": len(files), "uploaded": uploaded}
 
 
 def pull_pack(project: str, branch: str, store: PackStore, client: RegistryClient,
-              cfg: ProjectConfig | None = None) -> dict:
+              cfg: ProjectConfig | None = None, force: bool = False) -> dict:
     from kb.packs.index import build_index
     from kb.packs.model import Manifest
     from kb.packs.store import check_unsafe_paths
     from kb.sync.pack_io import apply_overlay
 
-    flush_outbox(project, branch, client, store)
+    warnings: list[str] = []
+    flush_outbox(project, branch, client, store, warnings)
     lt = client.latest(project, branch)
+    if store.exists(project, branch) and not force:
+        from kb.packs.model import commits_key
+
+        local = store.load(project, branch).manifest
+        remote_commits = lt["manifest"].get("commits", {})
+        if not local.synced and commits_key(local.commits) != commits_key(remote_commits):
+            raise KbError(f"your local analysis of {project}@{branch} is for different commits and was never "
+                          "pushed; run kb push first, or kb pull --force to replace it with the registry's")
     files_map: dict[str, str] = lt["files"]
     check_unsafe_paths(store.pack_dir(project, branch), files_map)  # before downloading anything
     cache = store.kb_home / "blobs"
@@ -141,9 +162,10 @@ def pull_pack(project: str, branch: str, store: PackStore, client: RegistryClien
         data = client.get_blob(h)
         cached.write_bytes(data)
         files[rel] = data
-    manifest = Manifest.model_validate(lt["manifest"])
+    manifest = Manifest.model_validate({**lt["manifest"], "synced": True})
     store.write_pulled_base(project, branch, manifest, files)
-    _, warnings = apply_overlay(store, project, branch, lt["overlay"])
+    _, more = apply_overlay(store, project, branch, lt["overlay"])
+    warnings += more
 
     config_yaml = client.project(project).get("config_yaml", "")
     if config_yaml:
@@ -155,8 +177,8 @@ def pull_pack(project: str, branch: str, store: PackStore, client: RegistryClien
         from kb.analyze import _mark_stale
         from kb.ask import available_checkouts
 
-        checkouts, more = available_checkouts(cfg, branch, store, manifest.commits)
-        warnings += more
+        checkouts, more2 = available_checkouts(cfg, branch, store, manifest.commits)
+        warnings += more2
         _mark_stale(store, project, branch, checkouts)
     pack = store.load(project, branch)
     build_index(pack.dir, pack)

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Iterator
 
 from fastapi import Depends, HTTPException, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from kb_registry.models import ROLES, ApiToken, Membership, Project, User
@@ -36,7 +37,7 @@ def current_user(request: Request, s: Session = Depends(get_session)) -> User:
     if not token:
         raise HTTPException(401, "not logged in: run kb login <registry-url>")
     user = authenticate(request, s, token)
-    if user is None:
+    if user is None or user.disabled:
         raise HTTPException(401, "invalid or expired credentials: run kb login <registry-url>")
     return user
 
@@ -68,13 +69,20 @@ def _oidc_user(request: Request, s: Session, token: str) -> User | None:
     if not sub or not email:
         return None
     user = s.query(User).filter_by(oidc_sub=sub).one_or_none()
-    if user is None:
-        user = s.query(User).filter_by(email=email).one_or_none()
-        if user is None:
-            user = User(email=email, name=claims.get("name", ""))
-            s.add(user)
-        user.oidc_sub = sub
+    if user is not None:
+        return user
+    existing = s.query(User).filter(func.lower(User.email) == email.lower()).one_or_none()
+    if existing is not None:
+        # Link an existing account only on a verified email, and never re-link one already tied to
+        # another identity: otherwise an IdP that lets users pick their email hands out admin accounts.
+        if claims.get("email_verified") is not True or existing.oidc_sub is not None:
+            return None
+        existing.oidc_sub = sub
         s.commit()
+        return existing
+    user = User(email=email, name=claims.get("name", ""), oidc_sub=sub)
+    s.add(user)
+    s.commit()
     return user
 
 

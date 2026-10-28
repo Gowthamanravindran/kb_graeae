@@ -29,6 +29,7 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(200), default="")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     oidc_sub: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
