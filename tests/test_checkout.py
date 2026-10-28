@@ -69,3 +69,12 @@ def test_subpath_applied_to_root(tmp_path):
 def test_missing_local_path_raises(tmp_path):
     with pytest.raises(KbError):
         checkout_repo(RepoConfig(name="w", role="frontend", local_path=tmp_path / "nope"), "x", tmp_path / "w")
+
+
+def test_folder_inside_another_git_repo_is_plain_folder(tmp_path):
+    make_git_repo(tmp_path / "outer", branch="main")
+    inner = tmp_path / "outer" / "copy"
+    inner.mkdir()
+    (inner / "x.ts").write_text("1")
+    co = checkout_repo(RepoConfig(name="c", role="frontend", local_path=inner), "release", tmp_path / "w")
+    assert co.commit.startswith("local-")

@@ -30,8 +30,9 @@ def _git(cwd: Path, *args: str) -> str:
 
 
 def _is_git_repo(path: Path) -> bool:
-    r = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=path, capture_output=True, text=True)
-    return r.returncode == 0 and r.stdout.strip() == "true"
+    """True only when `path` is the top of a git work tree (a copy inside another repo is a plain folder)."""
+    r = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=path, capture_output=True, text=True)
+    return r.returncode == 0 and Path(r.stdout.strip()).resolve() == Path(path).resolve()
 
 
 def content_hash(root: Path) -> str:
