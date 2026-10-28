@@ -58,6 +58,7 @@ dev = [
 ]
 [tool.pytest.ini_options]
 pythonpath = ["tests", "tests/registry", "tests/sync"]
+testpaths = ["tests"]  # build output (desktop/release, dist) bundles third-party tests
 
 [tool.uv.build-backend]
 module-name = ["kb", "kb_registry"]
