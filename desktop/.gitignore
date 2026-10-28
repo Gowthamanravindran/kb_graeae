@@ -1,0 +1,7 @@
+node_modules/
+dist/
+dist-electron/
+release/
+e2e/screenshots/
+test-results/
+playwright-report/
