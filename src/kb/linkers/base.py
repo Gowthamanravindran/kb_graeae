@@ -41,3 +41,16 @@ def get_linker(type_: str) -> Linker:
     if type_ not in _REGISTRY:
         raise ConfigError(f"unknown linker type '{type_}'. Known: {', '.join(sorted(_REGISTRY))}")
     return _REGISTRY[type_]()
+
+
+def ensure_node(graph: CodeGraph, node) -> str:
+    """Add a node if absent; returns its id."""
+    if not graph.has_node(node.id):
+        graph.add_node(node)
+    return node.id
+
+
+def ensure_file_node(graph: CodeGraph, repo: str, rel: str) -> str:
+    from kb.graph.model import CodeNode
+
+    return ensure_node(graph, CodeNode(id=f"{repo}:{rel}", repo=repo, kind="file", name=rel, file=rel, line=1))
