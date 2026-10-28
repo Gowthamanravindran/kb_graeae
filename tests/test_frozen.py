@@ -44,3 +44,22 @@ def test_frozen_runs_serve(monkeypatch):
     monkeypatch.setattr(frozen, "_run_kb", lambda args: seen.setdefault("args", args) and 0)
     frozen.main(["--port", "0"])
     assert seen["args"] == ["serve", "--port", "0"]
+
+
+def test_frozen_acts_like_python_for_dash_m(monkeypatch):
+    from kb import frozen
+
+    seen = {}
+
+    def fake_run_module(name, run_name=None, alter_sys=False):
+        seen.update(name=name, run_name=run_name, argv=list(sys.argv))
+    monkeypatch.setattr(frozen.runpy, "run_module", fake_run_module)
+    assert frozen.main(["-m", "graphify.worker", "--x", "1"]) == 0
+    assert seen == {"name": "graphify.worker", "run_name": "__main__", "argv": ["graphify.worker", "--x", "1"]}
+
+
+def test_frozen_acts_like_python_for_dash_c(capsys):
+    from kb import frozen
+
+    assert frozen.main(["-c", "print('hi from -c')"]) == 0
+    assert "hi from -c" in capsys.readouterr().out
