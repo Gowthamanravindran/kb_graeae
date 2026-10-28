@@ -6,10 +6,7 @@ import { AppProvider, useApp } from "./state";
 import { Library } from "./views/Library";
 import { MapView } from "./views/MapView";
 import { Ask } from "./views/Ask";
-
-function Placeholder({ title }: { title: string }) {
-  return <h1 className="text-[26px] font-bold">{title}</h1>;
-}
+import { Memory } from "./views/Memory";
 
 function Main() {
   const { view, project, branch } = useApp();
@@ -20,7 +17,7 @@ function Main() {
         {view === "library" && <Library />}
         {view === "map" && <MapView />}
         {view === "ask" && <Ask key={`${project}@${branch}`} />}
-        {view === "memory" && <Placeholder title="Memory" />}
+        {view === "memory" && <Memory key={`${project}@${branch}`} />}
       </main>
     </div>
   );
