@@ -12,6 +12,8 @@ Electron main ──spawns──▶ kb serve --port 0 --kb-home … --ui-dir …
 
 ## Develop
 
+Use **Node 22 LTS** (`desktop/.nvmrc`). On Node 26, Electron's installer stops partway through unzipping, and `npm run dev` then fails with "Electron failed to install correctly".
+
 ```bash
 uv sync                          # engine + dev deps (repo root)
 npm --prefix desktop install
