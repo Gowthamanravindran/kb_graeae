@@ -1,0 +1,26 @@
+# SOP project on Gowthaman's Mac. The folders are plain copies (no .git),
+# so they use local_path; any --branch label is accepted and recorded.
+project: sop
+repos:
+  - name: sop-web
+    local_path: /Users/gowthamanravindran/Documents/DummyFileSets/sop-fe-master
+    path: packages/sop-web
+    role: frontend
+  - name: sop-backend
+    local_path: /Users/gowthamanravindran/Documents/DummyFileSets/sop-backend-main
+    role: backend
+linkers:
+  - type: graphql
+    from: sop-web
+    to: sop-backend
+    options:
+      backend_style: graphql-compose
+  - type: bull-queue
+    in: sop-backend
+  - type: react-router
+    in: sop-web
+context_docs:
+  - sop-backend:CONTEXT.md
+  - sop-backend:docs/adr/**
+ignore: ["**/*.svg", "**/__generated__/**"]
+langfuse: http://localhost:3000
