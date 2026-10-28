@@ -205,5 +205,23 @@ def list_cmd(
         typer.echo(f"{b['branch']:<28} v{b['latest_version']:<4} {b['overlay_count']:>4} shared  {b['created_by']}  {commits}")
 
 
+@app.command()
+@handle_errors
+def push(
+    config: Path = typer.Argument(..., help="Path to kb.yaml"),
+    branch: str = typer.Option(..., "--branch", "-b"),
+) -> None:
+    """Upload an analysed branch to the registry (maintainers)."""
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+    from kb.sync import client as sc
+    from kb.sync.commands import push_pack
+
+    cfg = load_config(config)
+    out = push_pack(cfg, branch, PackStore(), sc.client_for(cfg))
+    typer.echo(f"pushed {cfg.project}@{branch} as version {out['version']} "
+               f"({out['files']} files, {out['uploaded']} uploaded)")
+
+
 def main() -> None:
     app()
