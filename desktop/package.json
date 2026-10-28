@@ -11,7 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder --publish never"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

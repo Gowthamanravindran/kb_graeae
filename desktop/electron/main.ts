@@ -20,7 +20,7 @@ function engineCommand(): { command: string; args: string[] } {
     const [command, ...rest] = process.env.KB_SERVE_CMD.split(" ").filter(Boolean);
     return { command, args: [...rest, ...common] };
   }
-  if (app.isPackaged) return { command: path.join(process.resourcesPath, "kb-serve", "kb-serve"), args: common };
+  if (app.isPackaged) return { command: path.join(process.resourcesPath, "kb-serve", process.platform === "win32" ? "kb-serve.exe" : "kb-serve"), args: common };
   return { command: "uv", args: ["run", "--project", repoRoot, "kb", "serve", ...common] };
 }
 

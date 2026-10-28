@@ -27,3 +27,32 @@ export async function launch(env: Record<string, string>): Promise<{ app: Electr
   const page = await app.firstWindow();
   return { app, page };
 }
+
+/** A real kb-registry (SQLite + file store) on a free port, with project `mini` and a maintainer token. */
+export async function startRegistry(dir: string): Promise<{ url: string; token: string; stop(): void }> {
+  const { spawn } = await import("node:child_process");
+  const net = await import("node:net");
+  const port = await new Promise<number>((resolve) => {
+    const s = net.createServer().listen(0, "127.0.0.1", () => {
+      const p = (s.address() as { port: number }).port;
+      s.close(() => resolve(p));
+    });
+  });
+  const env = { ...process.env, KB_REGISTRY_DATABASE_URL: `sqlite:///${dir}/registry.db`, KB_REGISTRY_STORAGE: `file://${dir}/blobs` };
+  const reg = (...args: string[]) => execFileSync("uv", ["run", "--project", repo, "kb-registry", ...args], { cwd: dir, env, encoding: "utf8" });
+  reg("migrate");
+  reg("admin", "create-project", "mini");
+  const token = reg("admin", "create-user", "maint@x").trim().split("\n").pop()!.trim();
+  reg("admin", "grant", "maint@x", "mini", "maintainer");
+  const proc = spawn("uv", ["run", "--project", repo, "kb-registry", "serve", "--port", String(port)], { cwd: dir, env, stdio: "ignore" });
+  const url = `http://127.0.0.1:${port}`;
+  for (let i = 0; i < 120; i++) {
+    try {
+      if ((await fetch(`${url}/api/v1/auth/config`)).ok) break;
+    } catch {
+      /* not up yet */
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return { url, token, stop: () => proc.kill() };
+}

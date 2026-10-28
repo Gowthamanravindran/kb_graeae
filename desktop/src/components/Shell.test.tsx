@@ -44,3 +44,16 @@ test("login dialog offers single sign-on and shows the code", async () => {
   await waitFor(() => expect((window as any).kb.openExternal).toHaveBeenCalledWith("https://idp/activate?code=AB-CD"));
   expect(screen.getByRole("button", { name: "Use an API token instead" })).toBeInTheDocument();
 });
+
+test("status footer offers sign-in when the registry needs it", async () => {
+  const api = fakeApi({
+    registry: vi.fn(async () => ({ url: "http://reg", logged_in: false, email: null, reachable: true, sso: false })),
+    login: vi.fn(async () => ({ email: "me@corp" })),
+  });
+  renderApp(<Sidebar />, api);
+  await userEvent.click(await screen.findByRole("button", { name: "Sign in to registry" }));
+  await userEvent.type(await screen.findByLabelText("API token from your registry admin"), "kbr_x");
+  await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+  expect(api.login).toHaveBeenCalledWith("http://reg", "kbr_x");
+  await waitFor(() => expect(api.registry).toHaveBeenCalledTimes(3));
+});
