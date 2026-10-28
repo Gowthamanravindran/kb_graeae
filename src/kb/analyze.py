@@ -52,15 +52,18 @@ def _commits_key(commits: dict[str, str]) -> str:
 
 
 def run_analyze(cfg: ProjectConfig, branch: str, store: PackStore, provider: LLMProvider, tracer,
-                resume: bool = False, author: str = "unknown") -> Manifest:
+                resume: bool = False, author: str = "unknown", progress=None) -> Manifest:
+    report = progress or (lambda text, frac: None)
     work = _work_dir(store, cfg.project, branch)
     project = cfg.project
     with tracer.trace("analyze", {"project": project, "branch": branch}) as root:
+        report("Checking out code", 0.02)
         with tracer.span("checkout") as sp:
             checkouts = resolve_checkouts(cfg, branch, store)
             commits = {k: v.commit for k, v in checkouts.items()}
             sp.end(output=commits)
 
+        report("Building the code graph", 0.1)
         with tracer.span("graph") as sp:
             graphs: dict[str, CodeGraph] = {}
             unparsed = 0
@@ -76,6 +79,7 @@ def run_analyze(cfg: ProjectConfig, branch: str, store: PackStore, provider: LLM
             n_files = sum(len(g.nodes(kind="file")) for g in graphs.values())
             sp.end(output={"files": n_files, "nodes": len(merged.nodes()), "unparsed": unparsed})
 
+        report("Linking frontend and backend", 0.3)
         with tracer.span("link") as sp:
             repo_ids = {n.id for g in graphs.values() for n in g.nodes()}
             links: list[CodeEdge] = []
@@ -100,7 +104,9 @@ def run_analyze(cfg: ProjectConfig, branch: str, store: PackStore, provider: LLM
         with tracer.span("module_map") as sp:
             clusters = cluster_graph(merged)
             modules, failed = map_modules(clusters, merged, context_text(cfg, checkouts), provider, tracer,
-                                          work / "modules" / _commits_key(commits), resume)
+                                          work / "modules" / _commits_key(commits), resume,
+                                          on_module=lambda i, n: report(f"Naming modules ({i}/{n})", 0.35 + 0.55 * i / n))
+            report("Writing the overview", 0.92)
             overview = write_system_overview(modules, merged, provider, tracer, cwd=work) if modules else ""
             sp.end(output={"modules": [m.name for m in modules], "failed": failed})
 

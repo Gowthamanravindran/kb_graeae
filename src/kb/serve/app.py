@@ -84,6 +84,24 @@ class LoginIn(BaseModel):
     token: str
 
 
+class SsoIn(BaseModel):
+    registry: str
+
+
+class AnalyzeIn(BaseModel):
+    resume: bool = False
+
+
+class AskIn(BaseModel):
+    question: str
+    from_qa: str | None = None
+    no_reuse: bool = False
+
+
+class PullIn(BaseModel):
+    force: bool = False
+
+
 def create_app(settings: ServeSettings) -> FastAPI:
     app = FastAPI(title="kb serve", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(TokenHostMiddleware, token=settings.token)
@@ -154,6 +172,90 @@ def create_app(settings: ServeSettings) -> FastAPI:
         save_token(settings.kb_home, url, body.token, "static")
         return {"email": me["email"]}
 
+    # ---------- branches, analyze, ask, push, pull ----------
+
+    def _branch_key(name: str, branch: str) -> str:
+        return f"analyze:{name}@{branch}"
+
+    @app.get("/api/projects/{name}/branches")
+    def branches(name: str) -> dict:
+        from kb.serve.views import branch_rows
+
+        cfg = ws.config(name)
+        remote, err = None, None
+        if cfg.registry:
+            try:
+                remote = settings.client(cfg).branches(cfg.project)
+            except KbError as e:
+                err = str(e)
+        active = {j.key.split("@", 1)[1]: j.id for j in jobs.list("analyze", active_only=True)
+                  if j.key and j.key.startswith(f"analyze:{cfg.project}@")}
+        return {"rows": branch_rows(cfg.project, settings.store(), remote, active), "registry_error": err}
+
+
+    @app.post("/api/projects/{name}/branches/{branch:path}/analyze")
+    def analyze(name: str, branch: str, body: AnalyzeIn) -> dict:
+        from kb.analyze import run_analyze
+        from kb.cli import _author
+        from kb.tracing import make_tracer
+
+        cfg = ws.config(name)
+
+        def run(rep):
+            m = run_analyze(cfg, branch, settings.store(), settings.provider(), make_tracer(cfg), resume=body.resume,
+                            author=_author(), progress=lambda text, frac: rep.step(text, frac))
+            return {"status": m.status, "stats": m.stats, "failed_modules": m.failed_modules}
+        return {"job_id": submit_or_409(jobs, "analyze", run, key=_branch_key(cfg.project, branch)).id}
+
+
+    def _ask_job(cfg, branch: str, question: str, from_qa=None, no_reuse=False):
+        def run(rep):
+            from kb.ask import run_ask
+            from kb.cli import _author
+            from kb.serve.stats import StatsTracer
+            from kb.serve.views import ask_payload
+            from kb.tracing import make_tracer
+
+            rep.step("Finding the right code", 0.1)
+            stats = StatsTracer(make_tracer(cfg))
+            t0 = time.monotonic()
+            store = settings.store()
+            st = run_ask(cfg, branch, question, store, settings.provider(), stats, from_qa=from_qa,
+                         author=_author(), no_reuse=no_reuse)
+            return ask_payload(st, stats, time.monotonic() - t0, store.load(cfg.project, branch))
+        return {"job_id": jobs.submit("ask", run).id}
+
+    @app.post("/api/projects/{name}/branches/{branch:path}/ask")
+    def ask(name: str, branch: str, body: AskIn) -> dict:
+        cfg = ws.config(name)
+        settings.store().load(cfg.project, branch)  # 400 now if there is no pack
+        return _ask_job(cfg, branch, body.question, body.from_qa, body.no_reuse)
+
+    app.state.ask_job = _ask_job
+
+    @app.post("/api/projects/{name}/branches/{branch:path}/push")
+    def push(name: str, branch: str) -> dict:
+        from kb.sync.commands import push_pack
+
+        cfg = ws.config(name)
+
+        def run(rep):
+            rep.step("Uploading the analysis", 0.2)
+            return push_pack(cfg, branch, settings.store(), settings.client(cfg))
+        return {"job_id": submit_or_409(jobs, "push", run, key=f"push:{cfg.project}@{branch}").id}
+
+
+    @app.post("/api/projects/{name}/branches/{branch:path}/pull")
+    def pull(name: str, branch: str, body: PullIn) -> dict:
+        from kb.sync.commands import pull_pack
+
+        cfg = ws.config(name)
+
+        def run(rep):
+            rep.step("Downloading the analysis", 0.2)
+            return pull_pack(cfg.project, branch, settings.store(), settings.client(cfg), cfg=cfg, force=body.force)
+        return {"job_id": submit_or_409(jobs, "pull", run, key=f"pull:{cfg.project}@{branch}").id}
+
     @app.get("/api/jobs")
     def list_jobs(kind: str | None = None, active: int = 0) -> list[dict]:
         return [j.to_dict() for j in jobs.list(kind, bool(active))]
@@ -165,8 +267,6 @@ def create_app(settings: ServeSettings) -> FastAPI:
             raise HTTPException(404, "no such job")
         return j.to_dict()
 
-    class SsoIn(BaseModel):
-        registry: str
 
     @app.post("/api/login/sso")
     def login_sso(body: SsoIn) -> dict:
