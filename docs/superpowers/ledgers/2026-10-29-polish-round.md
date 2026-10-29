@@ -1,6 +1,6 @@
 # Polish round — execution ledger
 
-AppImage smoke after the round: Library and Settings render (SMOKE OK).
+Reviewed together with stage 5a (see that ledger's Final section).
 
 ```
 # SDD ledger — plan: docs/superpowers/plans/2026-10-29-polish-round.md
@@ -20,4 +20,5 @@ Task 9: Ruling: "Open kb.yaml" became "Show kb.yaml" through a new IPC kb:reveal
 Task 9: Ruling: env_source tracks keys that came from kb.env or Settings in envfile._applied; anything else in os.environ is "environment" and Settings never overwrites it — cost if wrong: none.
 Task 9: complete (commits e0b0eb7..a31685d, tests: bash -c 'uv run pytest -q 2>&1 | tail -1 && cd desktop && npx vitest run 2>&1 | grep -E '^ +Tests' && npx tsc -p tsconfig.json --noEmit && npx tsc -p tsconfig.electron.json --noEmit' →       Tests  62 passed (62))
 Task 10: Ruling: one fresh whole-branch review covers the polish round and stage 5a together (run after 5a) — the two plans touch the same files and the user ran them back to back — cost if wrong: polish findings arrive later.
+Task 10: complete (commits a31685d..83d0e37, tests: bash -c 'uv run pytest -q 2>&1 | tail -1' → 332 passed in 36.44s)
 ```
