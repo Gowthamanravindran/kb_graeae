@@ -23,7 +23,7 @@ export function createClient({ baseUrl, token }: { baseUrl: string; token: strin
   }
   const b = (p: string, br: string) => `/api/projects/${encodeURIComponent(p)}/branches/${seg(br)}`;
   return {
-    status: () => call<Status>("GET", "/api/status"),
+    status: (fresh = false) => call<Status>("GET", fresh ? "/api/status?fresh=1" : "/api/status"),
     projects: () => call<ProjectRow[]>("GET", "/api/projects"),
     addProject: (configPath: string) => call<ProjectRow>("POST", "/api/projects", { config_path: configPath }),
     registry: (p: string) => call<RegistryStatus>("GET", `/api/projects/${encodeURIComponent(p)}/registry`),

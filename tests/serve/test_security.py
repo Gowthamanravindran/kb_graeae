@@ -116,3 +116,17 @@ def test_serve_exits_when_parent_closes_stdin(tmp_path):
     finally:
         if p.poll() is None:
             p.kill()
+
+
+def test_status_fresh_bypasses_cache(tmp_path):
+    from kb.errors import LLMUnavailable
+    from kb.serve.app import ServeSettings, create_app
+
+    p = FakeProvider(unavailable="not signed in")
+    app = create_app(ServeSettings(kb_home=tmp_path, token=TOKEN, provider_factory=lambda: p))
+    c = TestClient(app, base_url="http://127.0.0.1:1")
+    c.headers["X-KB-Token"] = TOKEN
+    assert c.get("/api/status").json()["claude"]["available"] is False
+    p.unavailable = None
+    assert c.get("/api/status").json()["claude"]["available"] is False  # cached
+    assert c.get("/api/status?fresh=1").json()["claude"]["available"] is True

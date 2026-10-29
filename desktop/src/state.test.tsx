@@ -16,3 +16,10 @@ test("changing branch or project drops the previous Ask seed", () => {
   act(() => ctx.go("ask", { branch: "x", askSeed: { question: "q" } })); // explicit seed with the switch wins
   expect(ctx.askSeed).toEqual({ question: "q" });
 });
+
+test("focus_rechecks_status", async () => {
+  const api = fakeApi();
+  render(<AppProvider api={api}><span /></AppProvider>);
+  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  expect(api.status).toHaveBeenCalledWith(true);
+});

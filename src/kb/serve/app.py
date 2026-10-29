@@ -63,9 +63,9 @@ class ServeSettings:
 
         return PackStore(self.kb_home)
 
-    def claude_status(self) -> dict:
+    def claude_status(self, fresh: bool = False) -> dict:
         now = time.monotonic()
-        if self._claude and now - self._claude[0] < 60:
+        if self._claude and not fresh and now - self._claude[0] < 60:
             return self._claude[1]
         try:
             self.provider().check()
@@ -137,10 +137,10 @@ def create_app(settings: ServeSettings) -> FastAPI:
         return JSONResponse({"detail": str(exc)}, status_code=status if isinstance(status, int) and 400 <= status < 500 else 400)
 
     @app.get("/api/status")
-    def status() -> dict:
+    def status(fresh: int = 0) -> dict:
         configured = bool(os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY"))
         host = (os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL") or "").rstrip("/") or None
-        return {"version": __version__, "claude": settings.claude_status(),
+        return {"version": __version__, "claude": settings.claude_status(bool(fresh)),
                 "langfuse": {"configured": configured, "host": host if configured else None}}
 
     @app.get("/api/projects")

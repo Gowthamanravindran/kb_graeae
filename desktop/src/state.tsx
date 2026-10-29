@@ -13,7 +13,7 @@ interface Ctx extends UiState {
   current: ProjectRow | null;
   set(patch: Partial<UiState>): void;
   go(view: View, patch?: Partial<UiState>): void;
-  refresh(): Promise<void>;
+  refresh(fresh?: boolean): Promise<void>;
 }
 
 const AppCtx = createContext<Ctx | null>(null);
@@ -37,14 +37,25 @@ export function AppProvider({ api, initial, children }: { api: Api; initial?: Pa
   const [ui, setUi] = useState<UiState>({ project: null, branch: null, view: "library", askSeed: null, ...loadSaved(), ...initial });
   const [status, setStatus] = useState<Status | null>(null);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
-  const refresh = useCallback(async () => {
-    const [s, p] = await Promise.all([api.status().catch(() => null), api.projects().catch(() => [])]);
+  const refresh = useCallback(async (fresh = false) => {
+    const [s, p] = await Promise.all([api.status(fresh).catch(() => null), api.projects().catch(() => [])]);
     setStatus(s);
     setProjects(p ?? []);
     setUi((u) => (u.project || !p?.length ? u : { ...u, project: p[0].name }));
   }, [api]);
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+  useEffect(() => {
+    // Installing or signing in to Claude Code happens outside the app: re-check when the user comes back.
+    let last = 0;
+    const onFocus = () => {
+      if (Date.now() - last < 10_000) return;
+      last = Date.now();
+      void refresh(true);
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
   useEffect(() => {
     try {
