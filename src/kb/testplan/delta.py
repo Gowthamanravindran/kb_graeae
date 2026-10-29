@@ -111,8 +111,10 @@ def graph_delta(base: CodeGraph, head: CodeGraph, hunks: list[Hunk],
     d = GraphDelta()
     base_ids = {n.id for n in base.nodes()}
     head_ids = {n.id for n in head.nodes()}
-    d.nodes_added = sorted(i for i in head_ids - base_ids if "#" in i)
-    d.nodes_removed = sorted(i for i in base_ids - head_ids if "#" in i)
+    def symbol(g: CodeGraph, i: str) -> bool:
+        return g.node(i).kind != "file" and not i.startswith("unresolved:")
+    d.nodes_added = sorted(i for i in head_ids - base_ids if symbol(head, i))
+    d.nodes_removed = sorted(i for i in base_ids - head_ids if symbol(base, i))
     be = {(e.src, e.dst, e.kind) for e in base.edges()}
     he = {(e.src, e.dst, e.kind) for e in head.edges()}
     d.edges_added, d.edges_removed = sorted(he - be), sorted(be - he)
