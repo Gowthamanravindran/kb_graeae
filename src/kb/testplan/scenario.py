@@ -101,7 +101,8 @@ def plan_scenario(cfg, label: str, store, provider, tracer, text: str | None = N
     old = {s.id: s for s in ps.load_slots(cfg.project, label, pid)}
     for s in slots:  # re-planning keeps what was already written
         if s.id in old:
-            s.status, s.case_id = old[s.id].status, old[s.id].case_id
+            st = old[s.id].status
+            s.status, s.case_id = ("planned" if st == "reserved" else st), old[s.id].case_id
     ps.save_slots(cfg.project, label, pid, slots)
     # the flow is already traced: reuse it as the plan's head trace
     tp = ps.dir(cfg.project, label, pid) / "traces" / f"{imp_flow.id}-head-{commits_key({r: b.commit for r, b in refs.items()})}.json"

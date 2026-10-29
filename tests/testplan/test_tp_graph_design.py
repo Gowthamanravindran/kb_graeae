@@ -87,3 +87,25 @@ def test_langfuse_span_per_flow(plan):
     run_design(cfg, pid, "production", store, DesignFake(), tr, "pr", {"P0": 1}, None)
     names = [s.name for s in tr.all]
     assert any("flow:" in n for n in names)
+
+
+def test_failure_after_reserving_releases_slots(plan, monkeypatch):
+    cfg, store, pid = plan
+    import kb.testplan.graph_design as gd
+
+    monkeypatch.setattr(gd, "_checkouts", lambda ctx, cs: (_ for _ in ()).throw(RuntimeError("git broke")))
+    with pytest.raises(RuntimeError):
+        run_design(cfg, pid, "production", store, DesignFake(), RecordingTracer(), "pr", {"P0": 2}, None)
+    assert not [s for s in _slots(store, pid) if s.status == "reserved"]
+
+
+def test_leftover_reserved_slots_are_reclaimed(plan):
+    cfg, store, pid = plan
+    ps = PlanStore(store)
+
+    def crash(slots):
+        for s in slots:
+            s.status = "reserved"  # as if the engine died mid-run
+    ps.update_slots("mini", "production", pid, crash)
+    res = run_design(cfg, pid, "production", store, DesignFake(), RecordingTracer(), "pr", {"P0": 2}, None)
+    assert res.written == 2 and not [s for s in _slots(store, pid) if s.status == "reserved"]

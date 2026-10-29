@@ -57,6 +57,7 @@ class _Ctx:
     author: str
     report: Any
     works: dict[str, DesignWork] = field(default_factory=dict)
+    reserved: set = field(default_factory=set)
     chosen: dict[str, list[CaseSlot]] = field(default_factory=dict)
     commits: str = ""
     total: int = 0
@@ -135,6 +136,7 @@ def plan_work(state: DesignState, ctx: _Ctx, counts: dict, cap: int | None, only
             if s.id in ids:
                 s.status, s.reserved_by, s.fail_reason = "reserved", ctx.author, None
     ctx.ps.update_slots(ctx.cfg.project, ctx.label, ctx.pid, reserve)
+    ctx.reserved = ids
     ctx.commits = commits_key({r: h.commit for r, h in cs.head.items()})
     base_cos, head_cos = _checkouts(ctx, cs)
     pack = ctx.store.load(ctx.cfg.project, ctx.label)
@@ -264,10 +266,24 @@ def run_design(cfg, plan_id: str, label: str, store, provider, tracer, mode: Mod
     g.add_edge("flow", "merge")
     g.add_edge("merge", "coverage")
     g.add_edge("coverage", END)
-    with tracer.trace("testplan_design", {"project": cfg.project, "plan": plan_id, "mode": mode}) as root:
-        state = g.compile().invoke({"results": []}, config={"callbacks": tracer.langgraph_callbacks()})
-        res = state["result"]
-        root.end(output=res.model_dump())
+    def release(only_ids=None):
+        def fn(slots):
+            for s in slots:
+                if s.status == "reserved" and (only_ids is None or s.id in only_ids):
+                    s.status, s.reserved_by = "planned", None
+        ctx.ps.update_slots(cfg.project, label, plan_id, fn)
+
+    # One design job per plan runs at a time (the job key), so anything still "reserved" is left over from
+    # a run that died (engine killed, app quit): give it back.
+    release()
+    try:
+        with tracer.trace("testplan_design", {"project": cfg.project, "plan": plan_id, "mode": mode}) as root:
+            state = g.compile().invoke({"results": []}, config={"callbacks": tracer.langgraph_callbacks()})
+            res = state["result"]
+            root.end(output=res.model_dump())
+    except BaseException:
+        release(ctx.reserved)
+        raise
     tracer.flush()
     ctx.report("Done", 1.0)
     return res
