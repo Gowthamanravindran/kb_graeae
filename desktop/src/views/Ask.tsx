@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { ApiError } from "../api/client";
 import type { AskPayload, Citation } from "../api/types";
 import { useJob } from "../api/useJob";
 import { FlowSteps } from "../components/FlowSteps";
+import { Markdown } from "../components/Markdown";
 import { Mermaid } from "../components/Mermaid";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -49,7 +49,7 @@ function Answer({ turn, onShare, onRetrace, onAsk, onOpen, onFeedback }: {
         {p.not_found && <Badge tone="warn">Not found in this code</Badge>}
       </div>
       {p.warnings.map((w) => <p key={w} className="text-sm text-warn">{w}</p>)}
-      <div className="flex flex-col gap-3 text-[15px] leading-relaxed"><ReactMarkdown>{p.answer}</ReactMarkdown></div>
+      <div className="flex flex-col gap-3 text-[15px] leading-relaxed"><Markdown>{p.answer}</Markdown></div>
       {p.mermaid && <Mermaid code={p.mermaid} />}
       {p.steps.length > 0 && (
         <div className="flex flex-col gap-5 md:flex-row">

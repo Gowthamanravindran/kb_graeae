@@ -1,10 +1,9 @@
 import { Background, Controls, ReactFlow, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useEffect, useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { ApiError } from "../api/client";
 import type { MapModule, MapView as MapPayload } from "../api/types";
-import { Mermaid } from "../components/Mermaid";
+import { Markdown } from "../components/Markdown";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { cn } from "../lib";
@@ -164,18 +163,7 @@ export function MapView() {
           </button>
           {overview && (
             <div className="prose-kb mt-4 flex flex-col gap-3 text-sm leading-relaxed">
-              <ReactMarkdown
-                components={{
-                  code({ className, children }) {
-                    const text = String(children).replace(/\n$/, "");
-                    if (className?.includes("language-mermaid")) return <Mermaid code={text} />;
-                    return <code className="font-mono text-xs">{children}</code>;
-                  },
-                  pre: ({ children }) => <>{children}</>,
-                }}
-              >
-                {map.system_md}
-              </ReactMarkdown>
+              <Markdown mermaid>{map.system_md}</Markdown>
             </div>
           )}
         </Card>
