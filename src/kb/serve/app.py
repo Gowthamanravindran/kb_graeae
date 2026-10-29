@@ -359,9 +359,13 @@ def create_app(settings: ServeSettings) -> FastAPI:
             return {"recorded": False}
         from langfuse import Langfuse
 
-        lf = Langfuse()
-        lf.create_score(trace_id=body.trace_id, name="helpful", value=float(1 if body.value else 0))
-        lf.flush()
+        try:
+            lf = Langfuse()
+            lf.create_score(trace_id=body.trace_id, name="helpful", value=float(1 if body.value else 0))
+            lf.flush()
+        except Exception as e:  # noqa: BLE001 — any SDK/network failure is reported, never a bare 500
+            jobs.log.exception("feedback for trace %s not recorded", body.trace_id)
+            raise HTTPException(502, f"Langfuse is unreachable: {e}")
         return {"recorded": True}
 
     @app.get("/api/projects/{name}/branches/{branch:path}/citation")

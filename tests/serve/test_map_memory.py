@@ -88,3 +88,24 @@ def test_publish_without_registry_is_400(serve):
 def test_feedback_without_langfuse(serve):
     c, *_ = setup(serve)
     assert c.post("/api/feedback", json={"trace_id": "t1", "value": 1}).json() == {"recorded": False}
+
+
+def test_feedback_langfuse_down_is_502(serve, monkeypatch):
+    c, *_ = setup(serve)
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+
+    class Down:
+        def __init__(self, **kw):
+            pass
+
+        def create_score(self, **kw):
+            raise ConnectionError("refused")
+
+        def flush(self):
+            pass
+
+    import langfuse
+    monkeypatch.setattr(langfuse, "Langfuse", Down)
+    r = c.post("/api/feedback", json={"trace_id": "t1", "value": 1})
+    assert r.status_code == 502 and r.json()["detail"] == "Langfuse is unreachable: refused"
