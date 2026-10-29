@@ -84,3 +84,31 @@ def test_report_without_hashes_does_not_mark_everything_stale(tmp_path):
     _write_all(ps)
     slots = _run(ps, _report([_item("user.isAdmin")], {FN: "h1"}), r1)
     assert {s.status for s in slots} == {"written"}
+
+
+def test_best_match_wins_when_one_check_is_removed_and_another_edited(tmp_path):
+    ps = PlanStore(PackStore(tmp_path))
+    r1 = _report([_item("user.isAdmin"), _item("user.isAdmin && task.open")], {FN: "h1"})
+    _run(ps, r1, None)
+    _write_all(ps)
+    before = {s.id: (s.inventory_ids[0], s.case_id) for s in ps.load_slots(P, L, PID) if s.rule == "permission"}
+    edited_old = r1.inventory[1].id
+    r2 = _report([_item("user.isAdmin && task.open && !task.locked")], {FN: "h2"})
+    slots = _run(ps, r2, r1)
+    stale_cases = {s.case_id for s in slots if s.status == "stale" and s.rule == "permission"}
+    assert stale_cases == {c for i, c in before.values() if i == edited_old}
+    assert {s.case_id for s in slots if s.status == "obsolete"} == {c for i, c in before.values() if i != edited_old}
+
+
+def test_upgrade_from_class_owned_items_keeps_cases_as_stale(tmp_path):
+    ps = PlanStore(PackStore(tmp_path))
+    old = InventoryItem(id=_id("be", "src/tasks.ts", "TaskService", "permission", "user.isAdmin"), kind="permission",
+                        change="changed", repo="be", file="src/tasks.ts", lines=(3, 3), function="TaskService",
+                        summary="x", outcomes=["allowed", "denied"], text="user.isAdmin")
+    r1 = _report([old], {"be:src/tasks.ts#TaskService": "h1"})
+    _run(ps, r1, None)
+    _write_all(ps)
+    new = old.model_copy(update={"id": _id("be", "src/tasks.ts", ".create", "permission", "user.isAdmin"), "function": ".create"})
+    slots = _run(ps, _report([new], {"be:src/tasks.ts#.create": "h1"}), r1)
+    assert sorted(s.status for s in slots if s.rule == "permission") == ["stale", "stale"]
+    assert not [s for s in slots if s.status == "obsolete"]

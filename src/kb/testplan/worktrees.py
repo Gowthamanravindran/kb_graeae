@@ -32,6 +32,7 @@ def git_source(repo: RepoConfig, work: Path, refresh: bool = False) -> Path | No
 
 
 _fetched: dict[Path, float] = {}
+_wt_lock = threading.Lock()  # prune_work never deletes a worktree while one is being opened
 _fetch_lock = threading.Lock()
 FETCH_TTL = 60.0
 
@@ -120,7 +121,7 @@ def worktree_at(repo: RepoConfig, ref: str, work: Path, refresh: bool = False) -
     source = git_source(repo, work, refresh)
     if source is None:
         raise KbError(f"PR analysis needs git repos for: {repo.name}")
-    if PULL_REF.match(ref):
+    if PULL_REF.fullmatch(ref):
         commit, _ = _pull_commit(repo, source, ref, work)
     else:
         try:
@@ -131,13 +132,14 @@ def worktree_at(repo: RepoConfig, ref: str, work: Path, refresh: bool = False) -
                 raise
             commit = resolve_commit(m, ref)
     dest = Path(work) / "worktrees" / repo.name / commit[:12]
-    if not (dest / ".git").exists():
-        mirror = _mirror(source, repo.name, work, commit) if repo.local_path is not None else source
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        _git(mirror, "worktree", "prune")
-        _git(mirror, "worktree", "add", "--detach", "--quiet", str(dest), commit)
-    else:
-        os.utime(dest)  # recently used: kept by prune_work
+    with _wt_lock:
+        if not (dest / ".git").exists():
+            mirror = _mirror(source, repo.name, work, commit) if repo.local_path is not None else source
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _git(mirror, "worktree", "prune")
+            _git(mirror, "worktree", "add", "--detach", "--quiet", str(dest), commit)
+        else:
+            os.utime(dest)  # recently used: kept by prune_work
     root = dest / repo.path if repo.path else dest
     return Checkout(repo.name, root, commit)
 
@@ -145,7 +147,11 @@ def worktree_at(repo: RepoConfig, ref: str, work: Path, refresh: bool = False) -
 def prune_work(work: Path, max_age_days: float = 14) -> int:
     """Delete PR graphs, build scratch and worktrees nobody used for `max_age_days` (they are rebuilt on
     demand). Returns how many were removed."""
-    work = Path(work)
+    with _wt_lock:
+        return _prune(Path(work), max_age_days)
+
+
+def _prune(work: Path, max_age_days: float) -> int:
     cutoff = time.time() - max_age_days * 86400
     removed = 0
 

@@ -43,8 +43,11 @@ function PrForm({ rows, onStarted }: { rows: BranchRow[]; onStarted(jobId: strin
   const [head, setHead] = useState<Record<string, string>>({});
   const [links, setLinks] = useState<Record<string, string>>({});
   const [linkNote, setLinkNote] = useState<Record<string, { title?: string; error?: string }>>({});
+  const [lookedUp, setLookedUp] = useState<Record<string, string>>({});
   const lookUp = async (repo: string) => {
     const url = (links[repo] ?? "").trim();
+    if (url === (lookedUp[repo] ?? "")) return; // unchanged link: keep any edits made since
+    setLookedUp((l) => ({ ...l, [repo]: url }));
     if (!url) return setLinkNote((n) => ({ ...n, [repo]: {} }));
     try {
       // the PR's own base and branch (a fork's branch is pull/<n>/head) replace what was filled in

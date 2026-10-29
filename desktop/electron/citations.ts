@@ -14,7 +14,8 @@ export interface OpenDeps {
  * script, `.command`, an app bundle, a file with no extension — could run when "opened", so it is shown in
  * its folder instead. On Windows the default action for `.js` runs it (Windows Script Host). */
 const SAFE = new Set(["ts", "tsx", "mts", "cts", "jsx", "json", "md", "markdown", "txt", "yaml", "yml", "graphql", "gql",
-  "css", "scss", "less", "sql", "prisma", "py", "go", "java", "kt", "rb", "rs", "vue", "svelte", "xml", "csv", "toml"]);
+  "css", "scss", "less", "sql", "prisma", "go", "java", "kt", "rs", "vue", "svelte", "xml", "csv", "toml"]);
+// .py and .rb are left out: their default app can be the interpreter (Windows `py` launcher, macOS Python Launcher)
 const SAFE_EXCEPT_WINDOWS = new Set(["js", "mjs", "cjs"]);
 
 export function safeToOpen(filePath: string, platform: string): boolean {

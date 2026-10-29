@@ -18,6 +18,7 @@ names the affected flows of a PR.
    - **Base** is the production branch of that repo (for example `master` for the web app and `develop` for the backend). Repos can differ.
    - **PR branch** is the branch to test. Leave it empty when the PR doesn't change that repo.
    - Optionally paste the **GitHub PR link**. When you leave the field, KB fills that repo's base and PR branch from the PR (replacing a pre-filled `default_branch`) and later adds the PR's title and description as context. Private repos need `GITHUB_TOKEN` (in **Settings**, or in `~/.kb/kb.env`).
+   - A link to a PR in a different repo than that row's is refused.
    - A PR from a **fork** is read as `pull/<number>/head`. KB fetches it into its own copy of the repo, from your repo's `origin` with your usual git sign-in, and never into your `.git`.
 2. **The base must be analysed.** KB compares the PR with an analysis of exactly those base branches. If there isn't one, the form says **Analyse … first** and offers the analysis. Per-repo branches are analysed under a name such as `production`.
 3. **Find what changed** builds the **Impact** screen, with no Claude calls apart from naming the flows:
@@ -48,13 +49,13 @@ names the affected flows of a PR.
 
 The detector covers:
 - `if` / `switch` / ternaries;
-- permission checks, including JSX gates such as `{isAdmin && <Delete/>}` and `{canEdit ? <Edit/> : <View/>}`;
+- permission checks, including JSX gates such as `{isAdmin && <Delete/>}` and `{canEdit ? <Edit/> : <View/>}` (plain show/hide such as `{loading && <Spinner/>}` is left out);
 - validations;
 - `throw`, 4xx/5xx responses and `catch` blocks;
 - fields sent in GraphQL `variables`;
-- data queries: Mongoose models, Prisma (`prisma.task.findMany`), TypeORM and repository classes (`taskRepository.save`).
+- data queries: `…Model` / `…Entity` classes, Prisma (`prisma.task.findMany`), TypeORM and repository classes (`taskRepository.save`). A Mongoose model whose name doesn't end in `Model` (`Task.find`) isn't recognised.
 
-A change inside a class method is credited to that method, not the whole class.
+A change inside a class method is credited to that method, not the whole class. Plans made before this keep their cases: on the first new run, cases in classes are marked stale once.
 
 ### When the PR gets new commits
 

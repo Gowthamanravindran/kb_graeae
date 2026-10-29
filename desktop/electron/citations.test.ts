@@ -69,3 +69,11 @@ test("source_files_still_open", async () => {
     expect(d.openPath).toHaveBeenCalledWith(p);
   }
 });
+
+test("python_and_ruby_are_shown_not_opened", async () => {
+  for (const p of ["/w/tool.py", "/w/task.rb"]) {
+    const d = revealDeps(p, "darwin");
+    await openCitation({ port: 4000, token: "t" }, c, d);
+    expect(d.openPath).not.toHaveBeenCalled();
+  }
+});

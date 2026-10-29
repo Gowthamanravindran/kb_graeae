@@ -114,3 +114,19 @@ test("pr_link_lookup_failure_is_shown_and_keeps_fields", async () => {
   expect(await screen.findByText(/Add GITHUB_TOKEN/)).toBeInTheDocument();
   expect(screen.getByLabelText("sop-web base branch")).toHaveValue("master");
 });
+
+test("pr_link_lookup_runs_only_when_the_link_changes", async () => {
+  const a = api({ prInfo: vi.fn(async () => ({ title: "T", base_ref: "develop", head_ref: "fix" })) });
+  renderApp(<TestPlans />, a);
+  const link = await screen.findByLabelText("sop-backend PR link");
+  await userEvent.type(link, "https://github.com/acme/sop-backend/pull/1");
+  await userEvent.tab();
+  await waitFor(() => expect(screen.getByLabelText("sop-backend base branch")).toHaveValue("develop"));
+  const base = screen.getByLabelText("sop-backend base branch");
+  await userEvent.clear(base);
+  await userEvent.type(base, "release");
+  await userEvent.click(link);
+  await userEvent.tab();
+  expect(a.prInfo).toHaveBeenCalledTimes(1);
+  expect(base).toHaveValue("release");
+});

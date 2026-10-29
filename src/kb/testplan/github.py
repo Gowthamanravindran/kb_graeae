@@ -59,3 +59,16 @@ def pr_info(url: str) -> PullRequest:
     return PullRequest(url=url, title=d.get("title") or "", body=body,
                        issues=sorted(set(re.findall(r"#\d+", body)), key=lambda s: int(s[1:])),
                        base_ref=base.get("ref", ""), head_ref=f"pull/{num}/head" if fork else head.get("ref", ""))
+
+
+_REMOTE = re.compile(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$")
+
+
+def check_pr_repo(pr_url: str, remote: str | None, repo_name: str) -> None:
+    """A PR link pasted into the wrong repo's row would read an unrelated PR's commits. Compared only when
+    the repo's remote is on GitHub."""
+    m, r = _URL.search(pr_url), _REMOTE.search((remote or "").strip())
+    if not m or not r:
+        return
+    if (m.group(1).lower(), m.group(2).lower()) != (r.group(1).lower(), r.group(2).lower()):
+        raise KbError(f"{pr_url} is a pull request on {m.group(1)}/{m.group(2)}, not {repo_name}")

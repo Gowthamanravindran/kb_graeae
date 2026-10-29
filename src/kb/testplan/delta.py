@@ -73,16 +73,23 @@ def _method_spans(cls) -> list[tuple[str, int, int]]:
     return out
 
 
-def find_span(source: str | None, path: str, name: str) -> tuple[int, int] | None:
-    """The span of symbol `name` (`f`, `.method`, or `.method@<line>` when a file has two of the same name)."""
+def find_span(source: str | None, path: str, name: str, near: int | None = None) -> tuple[int, int] | None:
+    """The span of symbol `name` (`f`, `.method`, or `.method@<line>` when a file has two of the same name).
+    `near` is a line known to be inside it (a hunk's start on this side), which beats `@line`: the line in an
+    id comes from the head graph and is off on the base side once lines shift."""
     if source is None:
         return None
     bare, _, at = name.partition("@")
     hits = [(a, b) for n, a, b in symbol_spans(source, path) if n == bare]
+    if not hits:
+        return None
+    if near is not None:
+        inside = [h for h in hits if h[0] <= near <= h[1]]
+        if inside:
+            return min(inside, key=lambda h: h[1] - h[0])
     if at.isdigit():
-        exact = [h for h in hits if h[0] == int(at)]
-        hits = exact or hits
-    return hits[0] if hits else None
+        return min(hits, key=lambda h: abs(h[0] - int(at)))
+    return hits[0]
 
 
 @dataclass

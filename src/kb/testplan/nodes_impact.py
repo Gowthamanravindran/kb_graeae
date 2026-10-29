@@ -50,8 +50,19 @@ def plan_id_for(project: str, base: dict[str, str], head: dict[str, str]) -> str
     return "pr-" + hashlib.sha1(f"{project}|{key}".encode()).hexdigest()[:10]
 
 
+def _remote_of(repo) -> str | None:
+    if repo.url:
+        return repo.url
+    try:
+        from kb.ingest.checkout import _git
+
+        return _git(Path(repo.local_path), "remote", "get-url", "origin")
+    except Exception:  # noqa: BLE001 — no git, no origin: nothing to compare
+        return None
+
+
 def resolve_change_set(state: dict, deps: ImpactDeps) -> dict:
-    from kb.testplan.github import pr_info
+    from kb.testplan.github import check_pr_repo, pr_info
 
     cfg, req = deps.cfg, state["request"]
     deps.report("Reading the change set", 0.02)
@@ -62,6 +73,7 @@ def resolve_change_set(state: dict, deps: ImpactDeps) -> dict:
     for repo, url in (req.pr_links or {}).items():
         if not url:
             continue
+        check_pr_repo(url, _remote_of(cfg.repo(repo)), repo)
         pr = pr_info(url)
         prs[repo] = PrInfo(url=url, title=pr.title, body=pr.body, issues=pr.issues)
         head[repo] = head.get(repo) or pr.head_ref
@@ -243,23 +255,21 @@ def reconcile(ps: PlanStore, project: str, label: str, pid: str, new_slots, prev
 
     old_inv = {i.id: i for i in (previous.inventory if previous else [])}
 
-    def successor(o, unmatched: list) -> object | None:
-        """The new slot standing for old slot `o` whose decision point was edited, not removed
-        (`isAdmin` → `isAdmin || isOwner`): same flow, type, outcome and rule, and a similar decision point
-        in the same function."""
+    def same_owner(old_fn: str, new_fn: str) -> bool:
+        # plans made before class methods had their own spans credited changes to the class
+        return old_fn == new_fn or (new_fn.startswith(".") and not old_fn.startswith("."))
+
+    def score(o, s) -> float:
+        """How well new slot `s` stands for old slot `o` whose decision point was edited, not removed
+        (`isAdmin` → `isAdmin || isOwner`): same flow, type, outcome and rule, a similar decision point
+        in the same function. 0 when it can't."""
         oi = old_inv.get(o.inventory_ids[0]) if o.inventory_ids else None
-        if oi is None:
-            return None
-        best, score = None, 0.0
-        for s in unmatched:
-            ni = inv.get(s.inventory_ids[0]) if s.inventory_ids else None
-            if (ni is None or (s.flow_id, s.scenario_type, s.outcome, s.rule) != (o.flow_id, o.scenario_type, o.outcome, o.rule)
-                    or (ni.repo, ni.function, ni.kind) != (oi.repo, oi.function, oi.kind)):
-                continue
-            r = _similar(oi.text or oi.summary, ni.text or ni.summary)
-            if r > score:
-                best, score = s, r
-        return best if score >= ALIGN else None
+        ni = inv.get(s.inventory_ids[0]) if s.inventory_ids else None
+        if (oi is None or ni is None
+                or (s.flow_id, s.scenario_type, s.outcome, s.rule) != (o.flow_id, o.scenario_type, o.outcome, o.rule)
+                or (ni.repo, ni.file, ni.kind) != (oi.repo, oi.file, oi.kind) or not same_owner(oi.function, ni.function)):
+            return 0.0
+        return _similar(oi.text or oi.summary, ni.text or ni.summary)
 
     def carry(s, o, cases, stale: bool) -> None:
         s.status, s.case_id, s.assigned_to, s.fail_reason = o.status, o.case_id, o.assigned_to, o.fail_reason
@@ -282,14 +292,16 @@ def reconcile(ps: PlanStore, project: str, label: str, pid: str, new_slots, prev
             else:
                 unmatched.append(s)
             merged.append(s)
-        for oid, o in list(old.items()):  # an edited decision point keeps its cases, now stale
-            if not (o.case_id or o.status in ("written", "stale")):
-                continue
-            s = successor(o, unmatched)
-            if s is not None:
-                unmatched.remove(s)
-                carry(s, o, cases, True)
-                del old[oid]
+        # an edited decision point keeps its cases, now stale; best pairs first, so a removed check
+        # never takes the cases of one that was edited
+        pairs = sorted(((score(o, s), oid, s.id) for oid, o in old.items() if o.case_id or o.status in ("written", "stale")
+                        for s in unmatched), key=lambda t: -t[0])
+        by_id = {s.id: s for s in unmatched}
+        for r, oid, sid in pairs:
+            if r < ALIGN:
+                break
+            if oid in old and sid in by_id:
+                carry(by_id.pop(sid), old.pop(oid), cases, True)
         for o in old.values():  # slots whose decision point disappeared
             if o.case_id or o.status in ("written", "stale", "obsolete"):
                 o.status = "obsolete"

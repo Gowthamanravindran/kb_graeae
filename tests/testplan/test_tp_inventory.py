@@ -70,7 +70,7 @@ def test_jsx_permission_gate_is_a_permission_check():
     kinds = [(x.kind, x.text, x.outcomes) for x in d]
     assert ("permission", "user.isAdmin", ["allowed", "denied"]) in kinds
     assert ("permission", "canEdit", ["allowed", "denied"]) in kinds
-    assert ("branch", "open", ["shown", "hidden"]) in kinds
+    assert not [k for k in kinds if k[1] == "open"]  # plain show/hide (spinners, empty states) isn't a decision
 
 
 def test_try_catch_is_an_error_point():
@@ -83,9 +83,9 @@ def test_try_catch_is_an_error_point():
 def test_orm_queries_are_query_points():
     src = ("async function f(id) {\n  await this.prisma.task.findMany({ where: { id } });\n"
            "  await prisma.user.update({ where: { id } });\n  await taskRepository.save(x);\n"
-           "  await this.userRepo.findOne(id);\n  await Task.findOneAndUpdate({ id }, {});\n"
-           "  Object.create(null);\n  Promise.all([]);\n}\n")
-    d = extract_decisions(src, "a.ts", 1, 9)
+           "  await this.userRepo.findOne(id);\n  await TaskEntity.findOneAndUpdate({ id }, {});\n"
+           "  Object.create(null);\n  Promise.all([]);\n  R.find(x, y);\n  Utils.findIndex(a);\n}\n")
+    d = extract_decisions(src, "a.ts", 1, 11)
     assert [x.kind for x in d] == ["query"] * 5
 
 
@@ -113,3 +113,25 @@ def test_hunk_in_method_inventories_only_that_method(tmp_path):
     delta = GraphDelta(hunk_owner={0: "r:s.ts#.a"})
     items = inventory({"r": Checkout("r", tmp_path / "b", "1")}, {"r": Checkout("r", tmp_path / "h", "2")}, delta, [h])
     assert [(i.kind, i.change, i.text) for i in items] == [("branch", "changed", "x.flag && x.ready")]
+
+
+def test_rethrow_in_catch_is_one_error_point():
+    src = "function f() {\n  try {\n    a();\n  } catch (e) {\n    throw new Error('wrapped');\n  }\n}\n"
+    assert [x.kind for x in extract_decisions(src, "a.ts", 1, 7)] == ["error"]
+
+
+def test_base_side_uses_the_method_the_hunk_is_in(tmp_path):
+    from kb.ingest.checkout import Checkout
+    from kb.testplan.delta import GraphDelta
+
+    cls = "export class {n} {{\n  get(x) {{\n    if (x.{f}) {{\n      go();\n    }}\n  }}\n}}\n"
+    base = cls.format(n="A", f="a") + cls.format(n="B", f="b")
+    head = cls.format(n="A", f="a") + "// one\n// two\n" + cls.format(n="B", f="b && x.c")
+    for d, s in (("b", base), ("h", head)):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "s.ts").write_text(s)
+    h = Hunk(repo="r", file="s.ts", old_file="s.ts", old_start=10, old_len=1, new_start=12, new_len=1,
+             added=["    if (x.b && x.c) {"], removed=["    if (x.b) {"])
+    delta = GraphDelta(hunk_owner={0: "r:s.ts#.get@11"})
+    items = inventory({"r": Checkout("r", tmp_path / "b", "1")}, {"r": Checkout("r", tmp_path / "h", "2")}, delta, [h])
+    assert [(i.kind, i.change, i.text) for i in items] == [("branch", "changed", "x.b && x.c")]

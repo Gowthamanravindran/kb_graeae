@@ -131,3 +131,35 @@ def test_fork_pr_ref_for_a_url_repo(tmp_path):
     gh, sha = _fork_pr(tmp_path, fx)
     repo = RepoConfig(name="mini-be", role="backend", url=str(gh))
     assert worktree_at(repo, "pull/7/head", tmp_path / "work").commit == sha
+
+
+def test_prune_and_worktree_share_a_lock(tmp_path):
+    from kb.testplan import worktrees
+
+    assert isinstance(worktrees._wt_lock, type(threading_lock()))
+    held = []
+    real = worktrees.shutil.rmtree
+    def rmtree(p, **k):
+        held.append(worktrees._wt_lock.locked())
+        return real(p, **k)
+    import os, time
+    d = tmp_path / "work" / "worktrees" / "r" / "abc"
+    d.mkdir(parents=True)
+    os.utime(d, (time.time() - 40 * 86400,) * 2)
+    worktrees.shutil.rmtree = rmtree
+    try:
+        worktrees.prune_work(tmp_path / "work")
+    finally:
+        worktrees.shutil.rmtree = real
+    assert held == [True]
+
+
+def threading_lock():
+    import threading
+    return threading.Lock()
+
+
+def test_pull_ref_must_match_exactly():
+    from kb.testplan.worktrees import PULL_REF
+
+    assert PULL_REF.fullmatch("pull/12/head") and not PULL_REF.fullmatch("pull/12/head\n")

@@ -19,11 +19,10 @@ PERMISSION = re.compile(r"\b(role|roles|permission|permissions|isAdmin|can[A-Z]\
 VALIDATES = re.compile(r"\b(args|input|req\.body|values|body)\.|\b(validate\w*|isValid\w*)\s*\(")
 _CRUD = r"(find\w*|create\w*|update\w*|upsert\w*|delete\w*|remove|save|insert\w*|count\w*|aggregate|groupBy)"
 QUERY_CALLS = (
-    re.compile(r"^(this\.)?\w*Model\." + _CRUD + "$"),                         # Mongoose models
+    re.compile(r"^(this\.)?\w*(Model|Entity)\." + _CRUD + "$"),                # Mongoose / ORM models
     re.compile(r"^(this\.)?\w*prisma\.\w+\." + _CRUD + "$", re.I),               # Prisma: prisma.task.findMany
     re.compile(r"^(this\.)?\w*(Repository|Repo|repository|repo)\." + _CRUD + "$"),  # TypeORM / repository classes
     re.compile(r"^getRepository\(.*\)\." + _CRUD + "$"),
-    re.compile(r"^[A-Z]\w*\.(find\w*|updateOne|updateMany|deleteOne|deleteMany|insertMany|countDocuments|aggregate)$"),
 )
 _BUILTINS = {"Object", "Array", "Promise", "Math", "JSON", "Reflect", "Number", "String", "Date", "Symbol", "Map", "Set"}
 JSX = {"jsx_element", "jsx_self_closing_element", "jsx_fragment"}
@@ -119,14 +118,14 @@ def extract_decisions(source: str, path: str, start: int, end: int) -> list[Deci
         elif n.type == "binary_expression" and _t(n.child_by_field_name("operator") or n) == "&&" \
                 and _is_jsx(n.child_by_field_name("right")):  # {isAdmin && <Delete/>}
             left = _t(n.child_by_field_name("left"))
-            if PERMISSION.search(left):
+            if PERMISSION.search(left):  # plain show/hide (spinners, empty states) would flood the plan
                 out.append(Decision("permission", left, ["allowed", "denied"], line))
-            else:
-                out.append(Decision("branch", left, ["shown", "hidden"], line))
         elif n.type == "catch_clause":
             body = n.child_by_field_name("body")
             first = _t(body.named_children[0]) if body is not None and body.named_children else ""
             param = n.child_by_field_name("parameter")
+            if body is not None and body.named_children and body.named_children[0].type == "throw_statement":
+                skip_throws.add(body.named_children[0].start_byte)  # a re-throw: one error point, the catch
             text = f"catch ({_t(param) if param is not None else ''}) {first}".strip().rstrip(";")
             out.append(Decision("error", text[:160], ["error"], line))
         elif n.type == "throw_statement" and n.start_byte not in skip_throws:
@@ -241,7 +240,9 @@ def inventory(base_cos: dict[str, Checkout], head_cos: dict[str, Checkout], delt
                                                     summary=f"Code changed in {name}", text=name))
             continue
         if name:
-            hs, bs = find_span(hsrc, hfile, full), find_span(bsrc, bfile, full)
+            first = hunks[idx[0]] if idx else None
+            hs = find_span(hsrc, hfile, full, first.new_start if first and first.new_len else None)
+            bs = find_span(bsrc, bfile, full, first.old_start if first and first.old_len else None)
             head_d = extract_decisions(hsrc, hfile, *hs) if hs and hsrc else []
             base_d = extract_decisions(bsrc, bfile, *bs) if bs and bsrc else []
         else:

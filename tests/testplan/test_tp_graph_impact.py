@@ -200,3 +200,13 @@ def test_fork_pr_uses_the_pull_ref(monkeypatch):
         "title": "t", "body": "", "base": {"ref": "develop", "repo": {"full_name": "acme/mini-be"}},
         "head": {"ref": "my-fix", "repo": None}})  # the fork was deleted
     assert github.pr_info("https://github.com/acme/mini-be/pull/7").head_ref == "pull/7/head"
+
+
+def test_pr_link_for_another_repo_is_refused():
+    from kb.testplan.github import check_pr_repo
+
+    check_pr_repo("https://github.com/acme/sop-backend/pull/4", "git@github.com:acme/sop-backend.git", "sop-backend")
+    check_pr_repo("https://github.com/acme/sop-backend/pull/4", "https://github.com/Acme/sop-backend", "sop-backend")
+    check_pr_repo("https://github.com/acme/x/pull/4", "/Users/me/x", "x")  # not on GitHub: nothing to compare
+    with pytest.raises(KbError, match="is a pull request on acme/sop-fe, not sop-backend"):
+        check_pr_repo("https://github.com/acme/sop-fe/pull/4", "https://github.com/acme/sop-backend.git", "sop-backend")
