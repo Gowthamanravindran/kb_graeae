@@ -111,3 +111,19 @@ linkers:
   - {{type: react-router, in: mini-fe}}
 """)
     return PrFixture(root=tmp, cfg_path=cfg, web=web, be=be)
+
+
+DRAFT = '```json\n{"name": "Tasks", "summary": "Admins create and schedule tasks.", "entry_points": []}\n```'
+
+
+def analyse_base(fx: PrFixture, kb_home: Path, label: str = "production"):
+    """Analyse the fixture's base branch set (master/develop) with a scripted Claude; returns (cfg, PackStore)."""
+    from fakes import FakeProvider, RecordingTracer
+    from kb.analyze import run_analyze
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+
+    cfg = load_config(fx.cfg_path)
+    store = PackStore(kb_home)
+    run_analyze(cfg, label, store, FakeProvider(default=DRAFT), RecordingTracer(), author="me", branches=dict(fx.base))
+    return cfg, store
