@@ -82,3 +82,47 @@ test("no branch selected asks to pick one", async () => {
   renderApp(<MapView />, fakeApi(), { project: "sop", branch: null, view: "map" });
   expect(await screen.findByText(/Open a branch from the Library/)).toBeInTheDocument();
 });
+
+const CONN = {
+  lanes: [{ id: "sop-web", label: "sop-web", role: "frontend" }, { id: "sop-backend", label: "sop-backend", role: "backend" }, { id: "jobs", label: "Background jobs", role: "jobs" }],
+  nodes: [
+    { id: "sop-web::m-tasks", lane: "sop-web", kind: "module", module_id: "m-tasks", name: "Tasks", code_name: "m-tasks", links: 2,
+      routes: [{ path: "/tasks/create-task", repo: "sop-web", file: "src/App.tsx", line: 8 }] },
+    { id: "sop-backend::m-tasks", lane: "sop-backend", kind: "module", module_id: "m-tasks", name: "Tasks", code_name: "m-tasks", links: 2, routes: [] },
+    { id: "jobs::sop-backend::m-jobs", lane: "jobs", kind: "jobs", module_id: null, name: "Background jobs jobs", code_name: "m-jobs (jobs)", links: 1, routes: [] },
+  ],
+  edges: [
+    { id: "e1", source: "sop-web::m-tasks", target: "sop-backend::m-tasks", kind: "graphql", count: 2, items: [
+      { label: "AddTask", from: { repo: "sop-web", file: "src/tasks/TaskCreation.tsx", line: 14 }, to: { repo: "sop-backend", file: "src/tasks/resolvers.ts", line: 6 } },
+      { label: "UpdateTask", from: { repo: "sop-web", file: "src/tasks/TaskEdit.tsx", line: 9 }, to: { repo: "sop-backend", file: "src/tasks/resolvers.ts", line: 30 } }] },
+    { id: "e2", source: "sop-backend::m-tasks", target: "jobs::sop-backend::m-jobs", kind: "queue", count: 1, items: [
+      { label: "TASK_REPEAT", from: { repo: "sop-backend", file: "src/tasks/resolvers.ts", line: 20 }, to: { repo: "sop-backend", file: "src/queues/repeat.ts", line: 3 } }] },
+  ],
+  unresolved: { graphql: 3 },
+};
+
+test("graph_view_shows_how_repos_connect", async () => {
+  const openCitation = vi.fn(async () => ({ ok: true }));
+  (window as any).kb = { openCitation };
+  const a = fakeApi({ map: vi.fn(async () => MAP), connections: vi.fn(async () => CONN) });
+  renderApp(<MapView />, a, { project: "sop", branch: "main", view: "map" });
+  await userEvent.click(await screen.findByRole("radio", { name: "Graph" }));
+  expect(a.connections).toHaveBeenCalledWith("sop", "main");
+  expect(await screen.findByText("Background jobs", { selector: "div" })).toBeInTheDocument();
+  expect(screen.getByText(/3 GraphQL calls couldn't be matched/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /^Tasks.*sop-web/ }));
+  const panel = screen.getByRole("complementary", { name: "Connection details" });
+  expect(within(panel).getByText("/tasks/create-task")).toBeInTheDocument();
+  await userEvent.click(within(panel).getByRole("button", { name: /GraphQL.*sop-backend.*2/ }));
+  expect(within(panel).getByText("AddTask")).toBeInTheDocument();
+  await userEvent.click(within(panel).getByRole("button", { name: "src/tasks/TaskCreation.tsx:14" }));
+  expect(openCitation).toHaveBeenCalledWith({ project: "sop", branch: "main", repo: "sop-web", file: "src/tasks/TaskCreation.tsx", line: 14 });
+  delete (window as any).kb;
+});
+
+test("graph_view_with_no_links_explains_why", async () => {
+  const a = fakeApi({ map: vi.fn(async () => MAP), connections: vi.fn(async () => ({ lanes: [], nodes: [], edges: [], unresolved: {} })) });
+  renderApp(<MapView />, a, { project: "sop", branch: "main", view: "map" });
+  await userEvent.click(await screen.findByRole("radio", { name: "Graph" }));
+  expect(await screen.findByText(/No links between the repos were found/)).toBeInTheDocument();
+});

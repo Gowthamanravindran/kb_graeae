@@ -1,4 +1,4 @@
-import type { NewProjectBody, SettingKey, SettingsView, PlanSummary, TestPlanDetail, Priority, AskPayload, BranchesResponse, Job, MapView, MemoryView, ProjectRow, RegistryStatus, SavedQA, Status } from "./types";
+import type { Connections, NewProjectBody, SettingKey, SettingsView, PlanSummary, TestPlanDetail, Priority, AskPayload, BranchesResponse, Job, MapView, MemoryView, ProjectRow, RegistryStatus, SavedQA, Status } from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, public detail: string) {
@@ -63,6 +63,7 @@ export function createClient({ baseUrl, token }: { baseUrl: string; token: strin
     push: (p: string, br: string) => call<JobRef>("POST", `${b(p, br)}/push`),
     pull: (p: string, br: string, force = false) => call<JobRef>("POST", `${b(p, br)}/pull`, { force }),
     map: (p: string, br: string) => call<MapView>("GET", `${b(p, br)}/map`),
+    connections: (p: string, br: string) => call<Connections>("GET", `${b(p, br)}/connections`),
     memory: (p: string, br: string) => call<MemoryView>("GET", `${b(p, br)}/memory`),
     qa: (p: string, br: string, id: string) => call<SavedQA>("GET", `${b(p, br)}/qa/${encodeURIComponent(id)}`),
     publish: (p: string, br: string, ids: string[], notes = false) =>

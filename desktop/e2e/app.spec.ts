@@ -207,3 +207,16 @@ test("add_project_from_repo_folders", async () => {
   await expect(row.getByText("Private · local only")).toBeVisible({ timeout: 120_000 });
   await app.close();
 });
+
+test("map_graph_shows_repo_connections", async () => {
+  const { home } = makeHome();
+  const { app, page } = await launch({ KB_HOME: home });
+  await expect(page.getByRole("heading", { name: "Library" })).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Open" }).first().click();
+  await page.getByRole("radio", { name: "Graph" }).click();
+  await page.getByRole("button", { name: "Tasks · mini-fe" }).click();
+  const panel = page.getByRole("complementary", { name: "Connection details" });
+  await panel.getByRole("button", { name: /GraphQL → Tasks \(mini-be\)/ }).click();
+  await expect(panel.getByText("AddTask")).toBeVisible();
+  await app.close();
+});

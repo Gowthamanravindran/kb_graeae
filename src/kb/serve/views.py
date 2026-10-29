@@ -105,6 +105,124 @@ def map_view(cfg, pack) -> dict:
     return {"apps": apps, "modules": modules, "edges": edges, "system_md": pack.system_md}
 
 
+MAX_ITEMS = 40
+_KIND_UNRESOLVED = {"handled_by": "graphql", "sends_graphql": "graphql", "enqueues": "queue", "consumed_by": "queue",
+                    "routes_to": "route"}
+
+
+def connections_view(cfg, pack) -> dict:
+    """How the repos are wired together, at the level of each repo's part of a module: GraphQL calls from
+    one repo to another, queue producers → topic → consumers, and the routes that open each screen. Built
+    from the linker edges only (no LLM)."""
+    g = pack.graph
+    roles = {r.name: r.role for r in cfg.repos}
+    names = {m.id: m.name for m in pack.modules}
+    owner: dict[str, str] = {}
+    for mod in pack.modules:
+        for m in mod.members:
+            owner.setdefault(m, mod.id)
+            owner.setdefault(m.split("#", 1)[0], mod.id)  # its file
+
+    def node(i: str):
+        return g.node(i) if g.has_node(i) else None
+
+    def loc(i: str) -> dict | None:
+        n = node(i)
+        return {"repo": n.repo, "file": n.file, "line": n.line or 1} if n else None
+
+    def group(i: str) -> str | None:
+        n = node(i)
+        if n is None:
+            return None
+        mod = owner.get(i) or owner.get(f"{n.repo}:{n.file}")
+        key = f"{n.repo}::{mod or '(other)'}"
+        if key not in nodes:
+            nodes[key] = {"id": key, "lane": n.repo, "kind": "module", "module_id": mod,
+                          "name": names.get(mod, f"Other code in {n.repo}") if mod else f"Other code in {n.repo}",
+                          "code_name": mod or "(other)", "routes": [], "links": 0}
+        return key
+
+    nodes: dict[str, dict] = {}
+    edges: dict[tuple, dict] = {}
+    unresolved: dict[str, int] = {}
+
+    def link(a: str | None, b: str | None, kind: str, label: str, frm: dict | None, to: dict | None):
+        if not a or not b:
+            return
+        e = edges.setdefault((a, b, kind), {"id": f"{a}->{b}:{kind}", "source": a, "target": b, "kind": kind,
+                                            "count": 0, "items": []})
+        item = {"label": label, "from": frm, "to": to}
+        if item in e["items"]:
+            return
+        e["count"] += 1
+        if len(e["items"]) < MAX_ITEMS:
+            e["items"].append(item)
+        nodes[a]["links"] += 1
+        nodes[b]["links"] += 1
+
+    def workers(consumer: str | None) -> str:
+        """Jobs are grouped by the code that runs them (one box per worker area, not per queue topic)."""
+        if consumer is None:
+            key, name, code = "jobs::(none)", "Queued, no worker found", "(no consumer)"
+        else:
+            c = node(consumer)
+            mod = owner.get(consumer) or (owner.get(f"{c.repo}:{c.file}") if c else None)
+            key = f"jobs::{c.repo if c else ''}::{mod or '(other)'}"
+            name = f"{names.get(mod, 'Other')} jobs" if mod else f"Other jobs in {c.repo if c else '?'}"
+            code = f"{mod or '(other)'} (jobs)"
+        nodes.setdefault(key, {"id": key, "lane": "jobs", "kind": "jobs", "module_id": None, "name": name,
+                               "code_name": code, "routes": [], "links": 0})
+        return key
+
+    linker = [e for e in g.edges() if e.origin == "linker"]
+    for e in linker:
+        if not e.resolved or e.dst.startswith("unresolved:"):
+            k = _KIND_UNRESOLVED.get(e.kind, e.kind)
+            unresolved[k] = unresolved.get(k, 0) + 1
+    out_by: dict[tuple[str, str], list[str]] = {}
+    in_by: dict[tuple[str, str], list[str]] = {}
+    for e in linker:
+        if e.resolved and not e.dst.startswith("unresolved:"):
+            out_by.setdefault((e.src, e.kind), []).append(e.dst)
+            in_by.setdefault((e.dst, e.kind), []).append(e.src)
+    for e in linker:
+        if not e.resolved or e.dst.startswith("unresolved:"):
+            continue
+        src, dst = node(e.src), node(e.dst)
+        if src is None or dst is None:
+            continue
+        if e.kind == "routes_to":
+            k = group(e.dst)
+            if k:
+                nodes[k]["routes"].append({"path": src.name, "repo": src.repo, "file": src.file, "line": src.line or 1})
+        elif e.kind == "sends_graphql":  # screen → operation → resolver: one line per operation
+            for r in out_by.get((e.dst, "handled_by"), []):
+                link(group(e.src), group(r), "graphql", dst.name, loc(e.src), loc(r))
+        elif e.kind == "handled_by":
+            continue  # drawn from the sending side
+        elif e.kind == "enqueues":  # producer → topic → consumer: one line from producer to the worker area
+            consumers = out_by.get((e.dst, "consumed_by"), [])
+            for c in consumers or [None]:
+                link(group(e.src), workers(c), "queue", dst.name, loc(e.src), loc(c) if c else loc(e.dst))
+        elif e.kind == "consumed_by":
+            continue  # drawn from the producing side
+        else:
+            link(group(e.src), group(e.dst), e.kind, f"{src.name} → {dst.name}", loc(e.src), loc(e.dst))
+    keep = {k for k, n in nodes.items() if n["links"] or n["routes"]}
+    order = [r.name for r in cfg.repos if roles.get(r.name) in ("frontend", "web", "mobile")] + \
+            [r.name for r in cfg.repos if roles.get(r.name) not in ("frontend", "web", "mobile")]
+    used = {nodes[k]["lane"] for k in keep}
+    lanes = [{"id": r, "label": r, "role": roles[r]} for r in order if r in used]
+    if "jobs" in used:
+        lanes.append({"id": "jobs", "label": "Background jobs", "role": "jobs"})
+    for n in nodes.values():
+        n["routes"].sort(key=lambda r: r["path"])
+    return {"lanes": lanes,
+            "nodes": sorted((nodes[k] for k in keep), key=lambda n: (-n["links"], n["name"])),
+            "edges": sorted(edges.values(), key=lambda e: -e["count"]),
+            "unresolved": unresolved}
+
+
 def memory_view(pack, queued_ids: set[str]) -> dict:
     flows = {f.id: f for f in pack.flows}
     names = {m.id: m.name for m in pack.modules}

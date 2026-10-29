@@ -75,3 +75,8 @@ export interface NewProjectBody {
   linkers: LinkerSpec[];
   context_docs: string[];
 }
+
+export interface Loc { repo: string; file: string; line: number }
+export interface ConnNode { id: string; lane: string; kind: "module" | "jobs"; module_id: string | null; name: string; code_name: string; links: number; routes: { path: string; repo: string; file: string; line: number }[] }
+export interface ConnEdge { id: string; source: string; target: string; kind: string; count: number; items: { label: string; from: Loc | null; to: Loc | null }[] }
+export interface Connections { lanes: { id: string; label: string; role: string }[]; nodes: ConnNode[]; edges: ConnEdge[]; unresolved: Record<string, number> }

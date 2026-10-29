@@ -394,6 +394,14 @@ def create_app(settings: ServeSettings) -> FastAPI:
         _readable(cfg.project, branch)
         return map_view(cfg, settings.store().load(cfg.project, branch))
 
+    @app.get("/api/projects/{name}/branches/{branch:path}/connections")
+    def connections(name: str, branch: str) -> dict:
+        from kb.serve.views import connections_view
+
+        cfg = ws.config(name)
+        _readable(cfg.project, branch)
+        return connections_view(cfg, settings.store().load(cfg.project, branch))
+
     @app.get("/api/projects/{name}/branches/{branch:path}/memory")
     def memory(name: str, branch: str) -> dict:
         from kb.serve.views import memory_view
