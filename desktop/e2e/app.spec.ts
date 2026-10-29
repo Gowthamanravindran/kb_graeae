@@ -166,3 +166,37 @@ test("scenario_test_plan_journey", async () => {
     await app.close();
   }
 });
+
+test("add_project_from_repo_folders", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kbadd-"));
+  const home = path.join(dir, "home");
+  const mk = (name: string, deps: Record<string, string>, branch: string) => {
+    const d = path.join(dir, name);
+    fs.mkdirSync(path.join(d, "src"), { recursive: true });
+    fs.writeFileSync(path.join(d, "package.json"), JSON.stringify({ dependencies: deps }));
+    fs.writeFileSync(path.join(d, "src", "index.ts"), "export const x = 1;\n");
+    const g = (...a: string[]) => execFileSync("git", ["-c", "user.email=t@x", "-c", "user.name=t", ...a], { cwd: d });
+    g("init", "-q", "-b", branch); g("add", "-A"); g("commit", "-qm", "init");
+    return d;
+  };
+  const web = mk("shop-web", { react: "18", "@apollo/client": "3", "react-router-dom": "6" }, "master");
+  const api = mk("shop-api-main", { "apollo-server": "3", bull: "4" }, "develop");
+  const { app, page } = await launch({ KB_HOME: home });
+  await expect(page.getByRole("heading", { name: "Library" })).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("main").getByRole("button", { name: "Add a project" }).click();
+  await page.getByLabel("Project name").fill("shop");
+  await page.getByLabel("Repo 1", { exact: true }).fill(web);
+  await page.getByRole("button", { name: "Add another repo" }).click();
+  await page.getByLabel("Repo 2", { exact: true }).fill(api);
+  await page.getByRole("button", { name: "Read repos" }).click();
+  await expect(page.getByLabel("Name of repo 2")).toHaveValue("shop-api", { timeout: 30_000 });
+  await expect(page.getByLabel("Default branch of repo 2")).toHaveValue("develop");
+  await expect(page.getByRole("checkbox", { name: "GraphQL: shop-web calls shop-api" })).toBeChecked();
+  await page.getByRole("button", { name: "Create project" }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
+  const yaml = fs.readFileSync(path.join(home, "projects", "shop", "kb.yaml"), "utf8");
+  expect(yaml).toContain("default_branch: develop");
+  expect(yaml).toContain("type: bull-queue");
+  await expect(page.getByText("shop", { exact: true }).first()).toBeVisible();
+  await app.close();
+});

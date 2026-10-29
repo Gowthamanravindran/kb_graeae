@@ -80,6 +80,10 @@ class ProjectIn(BaseModel):
     config_path: str
 
 
+class InspectIn(BaseModel):
+    sources: list[str]
+
+
 SETTINGS_KEYS = ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST", "GITHUB_TOKEN")
 PLAIN_SETTINGS = {"LANGFUSE_HOST"}
 
@@ -182,6 +186,33 @@ def create_app(settings: ServeSettings) -> FastAPI:
     @app.post("/api/projects")
     def add_project(body: ProjectIn) -> dict:
         return ws.add(Path(body.config_path))
+
+    @app.post("/api/projects/inspect")
+    def inspect_project(body: InspectIn) -> dict:
+        """Read repos given as links or folders (cloning a link to scratch) and suggest the project's set-up."""
+        from kb.project_setup import inspect_repos
+
+        sources = [s for s in body.sources if s.strip()]
+        if not sources:
+            raise HTTPException(400, "add at least one repo link or folder")
+
+        def run(rep):
+            got = inspect_repos(sources, settings.kb_home, progress=lambda t, f: rep.step(t, f))
+            return {"repos": [r.model_dump(mode="json", exclude={"signals"}) for r in got.repos],
+                    "linkers": [lk.model_dump(by_alias=True, exclude_none=True) for lk in got.linkers]}
+        return {"job_id": jobs.submit("inspect", run).id}
+
+    @app.post("/api/projects/create")
+    def create_project(body: dict) -> dict:
+        from kb.project_setup import NewProject, write_project
+
+        try:
+            spec = NewProject.model_validate(body)
+        except ValueError as e:
+            raise HTTPException(400, f"that project isn't valid: {e}") from e
+        if any(p["name"] == spec.project for p in ws.projects()):
+            raise KbError(f"a project named {spec.project} already exists")
+        return ws.add(write_project(settings.kb_home, spec))
 
     @app.delete("/api/projects/{name}")
     def remove_project(name: str) -> dict:

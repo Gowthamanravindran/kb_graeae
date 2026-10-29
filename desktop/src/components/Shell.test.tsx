@@ -2,7 +2,6 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ApiError } from "../api/client";
 import { fakeApi, renderApp } from "../test-utils";
-import { AddProjectDialog } from "./AddProjectDialog";
 import { LoginDialog } from "./LoginDialog";
 import { Sidebar } from "./Sidebar";
 
@@ -20,14 +19,6 @@ test("status footer explains when Claude Code is unavailable", async () => {
   expect(item.closest("[title]")).toHaveAttribute("title", "not signed in");
   expect(await screen.findByText("Registry · reg")).toBeInTheDocument();
   expect(screen.getByText("Langfuse · off")).toBeInTheDocument();
-});
-
-test("add project dialog shows the config error", async () => {
-  (window as any).kb = { pickFile: vi.fn(async () => "/x/bad.yaml") };
-  const api = fakeApi({ addProject: vi.fn(async () => { throw new ApiError(400, "cannot read /x/bad.yaml: bad yaml"); }) });
-  renderApp(<AddProjectDialog open onOpenChange={() => {}} />, api);
-  await userEvent.click(screen.getByRole("button", { name: "Choose kb.yaml…" }));
-  expect(await screen.findByText("cannot read /x/bad.yaml: bad yaml")).toBeInTheDocument();
 });
 
 test("login dialog offers single sign-on and shows the code", async () => {

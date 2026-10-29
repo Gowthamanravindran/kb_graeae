@@ -108,6 +108,10 @@ ipcMain.handle("kb:save-file", async (_e, defaultName: string, data: Uint8Array)
   await fs.promises.writeFile(r.filePath, Buffer.from(data));
   return { saved: true, path: r.filePath };
 });
+ipcMain.handle("kb:pick-folder", async () => {
+  const r = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+  return r.canceled ? null : r.filePaths[0];
+});
 ipcMain.handle("kb:pick-file", async (_e, filters: { name: string; extensions: string[] }[]) => {
   const r = await dialog.showOpenDialog({ properties: ["openFile"], filters });
   return r.canceled ? null : r.filePaths[0];

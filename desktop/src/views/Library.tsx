@@ -8,6 +8,7 @@ import { Card } from "../components/ui/card";
 import { Checkbox } from "../components/ui/checkbox";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
+import { AddProjectDialog } from "../components/AddProjectDialog";
 import { LoginDialog } from "../components/LoginDialog";
 import { hostOf } from "../lib";
 import { useApp } from "../state";
@@ -243,10 +244,13 @@ export function Library() {
 }
 
 function Empty() {
+  const [adding, setAdding] = useState(false);
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col items-start gap-3">
       <h1 className="text-[26px] font-bold">Library</h1>
-      <p className="text-muted">Add a project to get started: open the project menu in the sidebar and choose “Add a project…”.</p>
+      <p className="text-muted">Add a project to get started: give KB the GitHub links or folders of its repos.</p>
+      <Button onClick={() => setAdding(true)}>Add a project</Button>
+      <AddProjectDialog open={adding} onOpenChange={setAdding} />
     </div>
   );
 }

@@ -20,8 +20,23 @@ npm --prefix desktop install
 npm --prefix desktop run dev     # Vite + Electron; the engine runs as `uv run kb serve`
 ```
 
-The app keeps its project list in `$KB_HOME/desktop.json` (default `~/.kb`). Add a project with
-**Add a project…** in the project menu and pick its `kb.yaml`.
+The app keeps its project list in `$KB_HOME/desktop.json` (default `~/.kb`).
+
+### Adding a project
+
+Choose **Add a project** (on the empty Library, or **Add a project…** in the project menu).
+1. **Name the project and list its repos.** For each repo, paste a GitHub link or choose the folder of a clone you have. A link is cloned with your own git sign-in, so a private repo works if `git clone <link>` works in Terminal.
+2. **Read repos.** KB reads each repo's `package.json` and suggests:
+   - a name;
+   - a role (frontend or backend);
+   - the production branch, chosen from the repo's branches;
+   - for a monorepo, the package to use (for example `packages/sop-web`);
+   - how the repos connect: GraphQL from web to backend (with the backend style), React Router screens and Bull queues.
+
+   Change anything that's off.
+3. **Create project.** KB writes `~/.kb/projects/<name>/kb.yaml` and opens the project. You can still edit that file by hand.
+
+**Use an existing kb.yaml…** in the same dialog adds a project from a `kb.yaml` you already have.
 
 ### Tests
 
@@ -71,7 +86,7 @@ a **Retry** button, and **Open logs** (`$KB_HOME/logs/`).
 1. In the repo: `uv sync && npm --prefix desktop install`.
 2. `bash packaging/build-sidecar.sh && npm --prefix desktop run dist`, and check that `desktop/release/` has a `.dmg`.
 3. Install the dmg, then first-launch with right-click → Open. Expect the Library with the empty-state message.
-4. Add a project: **Add a project…** → pick the SOP `kb.yaml` (`examples/sop.kb.yaml` with your paths, or your own).
+4. Add a project: **Add a project** → name it `sop`, paste the links of `sop-fe-master` and `sop-backend-main` (or choose your clones) → **Read repos**. Check that the web repo uses `packages/sop-web`, the GraphQL link uses `graphql-compose`, and the production branches are right → **Create project**.
 5. **Analyse a branch** → `main`. Watch the progress steps. The row ends as "Private · local only".
 6. **Open** → the Map shows the SOP modules in plain English. Toggle **Code names**, pick **Tasks**, then **Ask about Tasks**.
 7. Ask "How does scheduling work in Tasks?" with real Claude Code. Expect UI flow and Backend flow with citations, a diagram, and "n of m steps verified". Click a citation: it opens in your editor. A citation to a script or a file with no extension is shown in Finder rather than opened, so nothing runs.

@@ -1,4 +1,4 @@
-import type { SettingKey, SettingsView, PlanSummary, TestPlanDetail, Priority, AskPayload, BranchesResponse, Job, MapView, MemoryView, ProjectRow, RegistryStatus, SavedQA, Status } from "./types";
+import type { NewProjectBody, SettingKey, SettingsView, PlanSummary, TestPlanDetail, Priority, AskPayload, BranchesResponse, Job, MapView, MemoryView, ProjectRow, RegistryStatus, SavedQA, Status } from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, public detail: string) {
@@ -27,6 +27,8 @@ export function createClient({ baseUrl, token }: { baseUrl: string; token: strin
     status: (fresh = false) => call<Status>("GET", fresh ? "/api/status?fresh=1" : "/api/status"),
     projects: () => call<ProjectRow[]>("GET", "/api/projects"),
     addProject: (configPath: string) => call<ProjectRow>("POST", "/api/projects", { config_path: configPath }),
+    inspectProject: (sources: string[]) => call<JobRef>("POST", "/api/projects/inspect", { sources }),
+    createProject: (body: NewProjectBody) => call<ProjectRow>("POST", "/api/projects/create", body),
     registry: (p: string) => call<RegistryStatus>("GET", `/api/projects/${encodeURIComponent(p)}/registry`),
     login: (registry: string, token: string) => call<{ email: string }>("POST", "/api/login", { registry, token }),
     logout: (registry: string) => call<{ forgotten: boolean }>("POST", "/api/logout", { registry }),
