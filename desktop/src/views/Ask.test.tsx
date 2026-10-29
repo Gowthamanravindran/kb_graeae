@@ -137,3 +137,12 @@ test("ask_share_signed_out_opens_login", async () => {
   await userEvent.click(await screen.findByRole("button", { name: "Share to sop@main" }));
   expect(await screen.findByText("Sign in to the registry")).toBeInTheDocument();
 });
+
+test("make_test_plan_from_answer", async () => {
+  const api = fakeApi({ job: vi.fn(async (id: string) => job(id, "done", PAYLOAD)), newScenarioPlan: vi.fn(async () => ({ job_id: "jt" })) });
+  function P() { const { view, planJobId } = useApp(); return <output data-testid="p">{view}|{planJobId ?? ""}</output>; }
+  renderApp(<><Ask /><P /></>, api, { project: "sop", branch: "main", view: "ask", askSeed: { question: "q", jobId: "j1" } });
+  await userEvent.click(await screen.findByRole("button", { name: "Make test plan" }));
+  expect(api.newScenarioPlan).toHaveBeenCalledWith("sop", { label: "main", answer_id: "qa1" });
+  expect(screen.getByTestId("p")).toHaveTextContent("testplans|jt");
+});

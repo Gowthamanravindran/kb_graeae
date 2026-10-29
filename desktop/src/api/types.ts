@@ -2,7 +2,7 @@
 export interface Status { version: string; claude: { available: boolean; reason: string | null }; langfuse: { configured: boolean; host?: string | null } }
 export interface ProjectRow { name: string; config_path: string; registry: string | null; repos?: { name: string; role: string; default_branch?: string | null }[]; linkers?: string[]; error?: string }
 export interface RegistryStatus { url: string | null; logged_in: boolean; email: string | null; reachable: boolean; sso: boolean }
-export interface LocalBranch { version: number; status: string; commits: Record<string, string>; author: string | null; created_at: string | null; modules: number; qa_total: number; qa_published: number; synced: boolean; stats: Record<string, number>; branches?: Record<string, string> }
+export interface LocalBranch { version: number; status: string; commits: Record<string, string>; author: string | null; created_at: string | null; modules: number; qa_total: number; qa_published: number; synced: boolean; stats: Record<string, number>; branches?: Record<string, string>; testplans?: number }
 export interface RemoteBranch { latest_version: number; overlay_count: number; created_by: string; commits: Record<string, string> }
 export type BranchState = "synced" | "not-pulled" | "local-only" | "update-available" | "in-progress";
 export interface BranchRow { branch: string; local: LocalBranch | null; remote: RemoteBranch | null; state: BranchState; job_id: string | null }

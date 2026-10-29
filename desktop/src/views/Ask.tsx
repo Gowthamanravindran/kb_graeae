@@ -35,8 +35,8 @@ function Running({ jobId, onDone, onFail }: { jobId: string; onDone(p: AskPayloa
   );
 }
 
-function Answer({ turn, onShare, onRetrace, onAsk, onOpen, onFeedback }: {
-  turn: Turn & { payload: AskPayload }; onShare(): void; onRetrace(): void; onAsk(q: string): void; onOpen(c: Citation): void; onFeedback(v: 0 | 1): void;
+function Answer({ turn, onShare, onRetrace, onAsk, onOpen, onFeedback, onTestPlan }: {
+  turn: Turn & { payload: AskPayload }; onShare(): void; onRetrace(): void; onTestPlan(): void; onAsk(q: string): void; onOpen(c: Citation): void; onFeedback(v: 0 | 1): void;
 }) {
   const { project, branch } = useApp();
   const p = turn.payload;
@@ -67,6 +67,7 @@ function Answer({ turn, onShare, onRetrace, onAsk, onOpen, onFeedback }: {
               <Button variant="ghost" size="sm" aria-label="Not helpful" aria-pressed={voted === 0} onClick={() => { setVoted(0); onFeedback(0); }}>👎</Button>
             </>
           )}
+          <Button variant="secondary" size="sm" onClick={onTestPlan}>Make test plan</Button>
           <Button variant="secondary" size="sm" onClick={onRetrace}>Re-trace</Button>
           {!turn.shared && <Button size="sm" onClick={onShare}>Share to {project}@{branch}</Button>}
         </div>
@@ -113,7 +114,7 @@ function How({ how }: { how: AskPayload["how"] }) {
 }
 
 export function Ask() {
-  const { api, project, branch, status, askSeed, set } = useApp();
+  const { api, project, branch, status, askSeed, set, go } = useApp();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -194,6 +195,14 @@ export function Ask() {
                     update(t.key, { shared: true });
                   } catch (e) {
                     if (e instanceof ApiError && e.status === 401) setLogin(true);
+                    setError(msg(e));
+                  }
+                }}
+                onTestPlan={async () => {
+                  try {
+                    const { job_id } = await api.newScenarioPlan(project, { label: branch, answer_id: t.payload!.saved_qa_id! });
+                    go("testplans", { planScreen: "list", planJobId: job_id });
+                  } catch (e) {
                     setError(msg(e));
                   }
                 }}

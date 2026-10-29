@@ -202,7 +202,10 @@ export function Library() {
                       <td className="px-4 py-4 text-[13px]">
                         {lo ? <><div>{lo.modules} modules</div><div className="text-muted">{lo.stats.links_resolved ?? 0} links · {lo.stats.links_unresolved ?? 0} unresolved</div></> : <span className="text-muted">—</span>}
                       </td>
-                      <td className="px-4 py-4 text-[13px]">{lo ? `${lo.qa_total} Q&As` : `${r.remote?.overlay_count ?? 0} shared`}</td>
+                      <td className="px-4 py-4 text-[13px]">
+                        <div>{lo ? `${lo.qa_total} Q&As` : `${r.remote?.overlay_count ?? 0} shared`}</div>
+                        {!!lo?.testplans && <div className="text-muted">{lo.testplans} test plan{lo.testplans === 1 ? "" : "s"}</div>}
+                      </td>
                     </>
                   )}
                   <td className="px-4 py-4"><Badge tone={badge.tone}>{badge.text}</Badge></td>

@@ -22,6 +22,7 @@ def local_branches(store, project: str) -> dict[str, dict]:
             "qa_published": sum(1 for q in pack.qa if q.visibility == "published"),
             "synced": bool(manifest.get("synced")), "stats": manifest.get("stats", {}),
             "branches": manifest.get("branches") or {r: manifest["branch"] for r in manifest["commits"]},
+            "testplans": len(list((d / "overlay" / "testplans").glob("*/changeset.json"))),
         }
     return out
 

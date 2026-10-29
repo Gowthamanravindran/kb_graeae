@@ -138,6 +138,12 @@ export function Memory() {
                           <Button variant="secondary" size="sm" onClick={() => void act(async () => toAsk(i.question, (await api.retrace(project, branch, i.qa_id)).job_id))}>Re-trace</Button>
                         )}
                         <Button variant="ghost" size="sm" onClick={() => go("ask", { askSeed: { qaId: i.qa_id } })}>Ask this</Button>
+                        {i.has_flow && (
+                          <Button variant="ghost" size="sm" onClick={() => void act(async () => {
+                            const { job_id } = await api.newScenarioPlan(project, { label: branch, answer_id: i.qa_id });
+                            go("testplans", { planScreen: "list", planJobId: job_id });
+                          })}>Make test plan</Button>
+                        )}
                       </div>
                     </li>
                   ))}

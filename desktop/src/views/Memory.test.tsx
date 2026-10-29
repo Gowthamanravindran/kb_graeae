@@ -110,3 +110,9 @@ test("share_signed_out_opens_login", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Share 2 selected" }));
   expect(await screen.findByText("Sign in to the registry")).toBeInTheDocument();
 });
+
+test("memory_make_test_plan", async () => {
+  const api = start({ newScenarioPlan: vi.fn(async () => ({ job_id: "jt" })) });
+  await userEvent.click(within(await screen.findByText("How does login work?").then((e) => e.closest("li")!)).getByRole("button", { name: "Make test plan" }));
+  expect(api.newScenarioPlan).toHaveBeenCalledWith("sop", { label: "main", answer_id: "q3" });
+});

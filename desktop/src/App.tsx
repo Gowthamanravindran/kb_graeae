@@ -10,6 +10,7 @@ import { Ask } from "./views/Ask";
 import { Memory } from "./views/Memory";
 import { Settings } from "./views/Settings";
 import { Impact } from "./views/Impact";
+import { PlanBoard } from "./views/PlanBoard";
 import { TestPlans } from "./views/TestPlans";
 
 function Main() {
@@ -23,7 +24,8 @@ function Main() {
         {view === "map" && <MapView />}
         {view === "ask" && <Ask key={`${project}@${branch}`} />}
         {view === "memory" && <Memory key={`${project}@${branch}`} />}
-        {view === "testplans" && (planScreen === "impact" && planId ? <Impact key={planId} /> : <TestPlans key={project ?? ""} />)}
+        {view === "testplans" && (planScreen === "impact" && planId ? <Impact key={planId} />
+          : planScreen === "board" && planId ? <PlanBoard key={planId} /> : <TestPlans key={project ?? ""} />)}
         {view === "settings" && <Settings />}
         </ErrorBoundary>
       </main>

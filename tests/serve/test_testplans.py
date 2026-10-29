@@ -132,3 +132,10 @@ def test_generate_only_ticked_flows(app):
     assert j["result"]["written"] == 0
     j = wait(c, c.post(f"/api/projects/mini/testplans/{pid}/generate", json={"counts": {"P0": 2}, "flow_ids": [fid]}).json()["job_id"])
     assert j["result"]["written"] == 2
+
+
+def test_branch_rows_count_test_plans(app):
+    c, fx, _ = app
+    _pr(c, fx)
+    row = next(r for r in c.get("/api/projects/mini/branches").json()["rows"] if r["branch"] == "production")
+    assert row["local"]["testplans"] == 1

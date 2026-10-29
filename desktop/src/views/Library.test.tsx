@@ -91,3 +91,9 @@ test("rows_show_per_repo_branches", async () => {
   renderApp(<Library />, api({ branches: vi.fn(async () => ({ rows: [{ branch: "production", local: prod, remote: null, state: "local-only", job_id: null }], registry_error: null })) }));
   expect(await screen.findByText("sop-web master · sop-backend develop")).toBeInTheDocument();
 });
+
+test("library_shows_plan_count", async () => {
+  const withPlans = { ...local, testplans: 2 };
+  renderApp(<Library />, api({ branches: vi.fn(async () => ({ rows: [{ branch: "main", local: withPlans, remote: null, state: "local-only", job_id: null }], registry_error: null })) }));
+  expect(await screen.findByText("2 test plans")).toBeInTheDocument();
+});
