@@ -5,7 +5,7 @@ contextBridge.exposeInMainWorld("kb", {
   baseUrl: "",
   token: "",
   openExternal: (url: string) => ipcRenderer.invoke("kb:open-external", url),
-  openFile: (filePath: string, line?: number) => ipcRenderer.invoke("kb:open-file", filePath, line ?? 1),
+  openCitation: (c: { project: string; branch: string; repo: string; file: string; line: number }) => ipcRenderer.invoke("kb:open-citation", c),
   pickFile: (filters?: { name: string; extensions: string[] }[]) => ipcRenderer.invoke("kb:pick-file", filters ?? []),
   engineStatus: () => ipcRenderer.invoke("kb:engine-status"),
   retryEngine: () => ipcRenderer.invoke("kb:retry-engine"),

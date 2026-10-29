@@ -156,12 +156,8 @@ export function Ask() {
   };
   const update = (key: string, patch: Partial<Turn>) => setTurns((ts) => ts.map((t) => (t.key === key ? { ...t, ...patch } : t)));
   const open = async (c: Citation) => {
-    try {
-      const r = await api.citation(project, branch, c.repo, c.file, c.line_start);
-      await window.kb?.openFile(r.path, r.line);
-    } catch (e) {
-      setError(msg(e));
-    }
+    const r = await window.kb?.openCitation({ project, branch, repo: c.repo, file: c.file, line: c.line_start });
+    if (r && !r.ok) setError(r.error ?? "Could not open that file.");
   };
   const label = followUpOf ? "Ask a follow-up about this answer…" : "Question";
 

@@ -48,13 +48,21 @@ test("ask_renders_payload", async () => {
 });
 
 test("citation opens the file in the editor", async () => {
-  const openFile = vi.fn(async () => {});
-  window.kb = { openFile } as unknown as Window["kb"];
-  const api = fakeApi({ job: vi.fn(async (id: string) => job(id, "done", PAYLOAD)), citation: vi.fn(async () => ({ path: "/w/src/tasks/Schedule.tsx", line: 12 })) });
+  const openCitation = vi.fn(async () => ({ ok: true }));
+  window.kb = { openCitation } as unknown as Window["kb"];
+  const api = fakeApi({ job: vi.fn(async (id: string) => job(id, "done", PAYLOAD)) });
   renderApp(<Ask />, api, { project: "sop", branch: "main", view: "ask", askSeed: { question: "q", jobId: "j1" } });
   await userEvent.click(await screen.findByRole("button", { name: "sop-web:src/tasks/Schedule.tsx:12" }));
-  expect(api.citation).toHaveBeenCalledWith("sop", "main", "sop-web", "src/tasks/Schedule.tsx", 12);
-  await waitFor(() => expect(openFile).toHaveBeenCalledWith("/w/src/tasks/Schedule.tsx", 12));
+  expect(openCitation).toHaveBeenCalledWith({ project: "sop", branch: "main", repo: "sop-web", file: "src/tasks/Schedule.tsx", line: 12 });
+  delete window.kb;
+});
+
+test("citation refused shows the reason", async () => {
+  window.kb = { openCitation: vi.fn(async () => ({ ok: false, error: "file not found in your checkout of sop-web" })) } as unknown as Window["kb"];
+  const api = fakeApi({ job: vi.fn(async (id: string) => job(id, "done", PAYLOAD)) });
+  renderApp(<Ask />, api, { project: "sop", branch: "main", view: "ask", askSeed: { question: "q", jobId: "j1" } });
+  await userEvent.click(await screen.findByRole("button", { name: "sop-web:src/tasks/Schedule.tsx:12" }));
+  expect(await screen.findByText("file not found in your checkout of sop-web")).toBeInTheDocument();
   delete window.kb;
 });
 

@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { openCitation, type CitationRef } from "./citations";
 import { defaultEngineEnv } from "./env";
 import { lockDown } from "./security";
 import { SidecarError, startSidecar, stopSidecar, type Sidecar } from "./sidecar";
@@ -89,11 +90,8 @@ ipcMain.handle("kb:open-logs", () => shell.openPath(logDir));
 ipcMain.handle("kb:open-external", (_e, url: string) => {
   if (typeof url === "string" && /^https?:\/\//.test(url)) return shell.openExternal(url);
 });
-ipcMain.handle("kb:open-file", (_e, filePath: string, line: number) => {
-  if (typeof filePath !== "string" || !path.isAbsolute(filePath) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return;
-  if (process.env.KB_EDITOR === "vscode") return shell.openExternal(`vscode://file${filePath}:${Number(line) || 1}`);
-  return shell.openPath(filePath);
-});
+ipcMain.handle("kb:open-citation", (_e, c: CitationRef) =>
+  openCitation(engine, c, { fetch: globalThis.fetch, openPath: shell.openPath, openExternal: shell.openExternal, editor: process.env.KB_EDITOR }));
 ipcMain.handle("kb:pick-file", async (_e, filters: { name: string; extensions: string[] }[]) => {
   const r = await dialog.showOpenDialog({ properties: ["openFile"], filters });
   return r.canceled ? null : r.filePaths[0];
