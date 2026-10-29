@@ -100,3 +100,13 @@ test("queued items offer Sync now", async () => {
   expect(api.sync).toHaveBeenCalledWith("sop", "main");
   expect(await screen.findByText("Sent 1 item to the registry.")).toBeInTheDocument();
 });
+
+test("share_signed_out_opens_login", async () => {
+  const { ApiError } = await import("../api/client");
+  start({ publish: vi.fn(async () => { throw new ApiError(401, "not signed in"); }) });
+  await screen.findByText("How does scheduling work?");
+  await userEvent.click(within(row("How does scheduling work?")).getByRole("checkbox"));
+  await userEvent.click(within(row("How are reminders sent?")).getByRole("checkbox"));
+  await userEvent.click(screen.getByRole("button", { name: "Share 2 selected" }));
+  expect(await screen.findByText("Sign in to the registry")).toBeInTheDocument();
+});

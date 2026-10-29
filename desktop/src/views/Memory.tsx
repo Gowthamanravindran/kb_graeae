@@ -6,6 +6,7 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Checkbox } from "../components/ui/checkbox";
+import { LoginDialog } from "../components/LoginDialog";
 import { cn } from "../lib";
 import { useApp } from "../state";
 
@@ -59,6 +60,7 @@ export function Memory() {
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runAll, setRunAll] = useState(false);
+  const [login, setLogin] = useState(false);
   const load = useCallback(async () => {
     if (!project || !branch) return;
     try { setView(await api.memory(project, branch)); } catch (e) { setError(msg(e)); }
@@ -68,7 +70,10 @@ export function Memory() {
 
   const act = async (fn: () => Promise<void>) => {
     setError(null);
-    try { await fn(); } catch (e) { setError(msg(e)); }
+    try { await fn(); } catch (e) {
+      if (e instanceof ApiError && e.status === 401) setLogin(true);
+      setError(msg(e));
+    }
   };
   const toAsk = (question: string, jobId: string) => go("ask", { askSeed: { question, jobId } });
   const share = () => act(async () => {
@@ -95,6 +100,7 @@ export function Memory() {
         <Button disabled={picked.size === 0} onClick={() => void share()}>Share {picked.size} selected</Button>
       </div>
       {error && <div role="alert" className="rounded-lg bg-warn-soft px-4 py-3 text-sm text-warn">{error}</div>}
+      {login && <LoginDialog open={login} onOpenChange={setLogin} />}
       {note && <div role="status" className="rounded-lg bg-ok-soft px-4 py-3 text-sm text-ok">{note}</div>}
       {view && (
         <div className="flex flex-col gap-5 lg:flex-row">

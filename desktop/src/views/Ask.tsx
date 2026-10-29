@@ -9,6 +9,7 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Input } from "../components/ui/input";
+import { LoginDialog } from "../components/LoginDialog";
 import { useApp } from "../state";
 
 interface Turn { key: string; question: string; jobId?: string; payload?: AskPayload; shared?: boolean; error?: string }
@@ -116,6 +117,7 @@ export function Ask() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [login, setLogin] = useState(false);
   const started = useRef(false);
   useEffect(() => {
     if (started.current || !project || !branch) return;
@@ -174,6 +176,7 @@ export function Ask() {
           </div>
         )}
         {error && <div role="alert" className="rounded-lg bg-warn-soft px-4 py-3 text-sm text-warn">{error}</div>}
+        {login && <LoginDialog open={login} onOpenChange={setLogin} />}
         {turns.map((t) => (
           <div key={t.key} className="flex flex-col gap-3">
             <div className="self-end rounded-2xl bg-ink px-4 py-2.5 text-sm text-white">{t.question}</div>
@@ -190,6 +193,7 @@ export function Ask() {
                     await api.publish(project, branch, [t.payload!.saved_qa_id!], false);
                     update(t.key, { shared: true });
                   } catch (e) {
+                    if (e instanceof ApiError && e.status === 401) setLogin(true);
                     setError(msg(e));
                   }
                 }}

@@ -129,3 +129,11 @@ test("queued question shows its place in line", async () => {
   renderApp(<Ask />, api, { project: "sop", branch: "main", view: "ask", askSeed: { question: "q", jobId: "j1" } });
   expect(await screen.findByText("Queued behind other questions (position 2)")).toBeInTheDocument();
 });
+
+test("ask_share_signed_out_opens_login", async () => {
+  const { ApiError } = await import("../api/client");
+  const api = fakeApi({ job: vi.fn(async (id: string) => job(id, "done", PAYLOAD)), publish: vi.fn(async () => { throw new ApiError(401, "not signed in"); }) });
+  renderApp(<Ask />, api, { project: "sop", branch: "main", view: "ask", askSeed: { question: "q", jobId: "j1" } });
+  await userEvent.click(await screen.findByRole("button", { name: "Share to sop@main" }));
+  expect(await screen.findByText("Sign in to the registry")).toBeInTheDocument();
+});
