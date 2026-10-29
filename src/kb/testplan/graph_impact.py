@@ -20,6 +20,7 @@ class ImpactState(TypedDict, total=False):
     head_cos: dict
     work: Any
     hunks: list
+    renames: dict
     head_graph: Any
     base_graph: Any
     delta: Any

@@ -46,3 +46,50 @@ def test_head_graph_cached(tmp_path):
     again = head_graph(cfg, head, tmp_path / "work")
     assert {n.id for n in again.nodes()} == {n.id for n in hg.nodes()}
     assert list((tmp_path / "work" / "head_graphs").glob("*.json"))
+
+
+def _move(fx, edit=False):
+    from fixture_repos import RESOLVERS, git
+
+    git(fx.be, "checkout", "-q", "feature/repeat-end")
+    new = RESOLVERS.replace("resolvers.ts", "task-resolvers.ts")
+    git(fx.be, "mv", RESOLVERS, new)
+    if edit:
+        p = fx.be / new
+        p.write_text(p.read_text().replace("if (task.repeat === 'weekly') {", "if (task.repeat === 'monthly') {"))
+    git(fx.be, "commit", "-qam", "move")
+    head = git(fx.be, "rev-parse", "HEAD")
+    git(fx.be, "reset", "-q", "--hard", "HEAD~1")  # the move goes on its own branch
+    git(fx.be, "branch", "-q", "moved", head)
+    git(fx.be, "checkout", "-q", "develop")
+    return head
+
+
+def _inv_between(tmp_path, fx, base_ref, head_ref):
+    from kb.testplan.diff import repo_renames
+    from kb.testplan.inventory import inventory
+
+    cfg = load_config(fx.cfg_path)
+    work = tmp_path / "work2"
+    base = {"mini-be": worktree_at(cfg.repo("mini-be"), base_ref, work), "mini-fe": worktree_at(cfg.repo("mini-fe"), "master", work)}
+    head = {"mini-be": worktree_at(cfg.repo("mini-be"), head_ref, work), "mini-fe": base["mini-fe"]}
+    hunks = repo_diff(fx.be, "mini-be", base_ref, head_ref, [])
+    renames = {("mini-be", o): n for o, n in repo_renames(fx.be, base_ref, head_ref).items()}
+    d = graph_delta(build_graph(cfg, base, work / "b").merged, head_graph(cfg, head, work), hunks, base, head, renames)
+    return d, inventory(base, head, d, hunks, renames)
+
+
+def test_pure_move_is_not_removal(tmp_path):
+    fx = make_pr_fixture(tmp_path)
+    _move(fx)
+    d, items = _inv_between(tmp_path, fx, "feature/repeat-end", "moved")
+    assert not [n for n in d.nodes_removed if "resolvers.ts#" in n]
+    assert items == []
+
+
+def test_move_with_edit_reports_only_the_edit(tmp_path):
+    fx = make_pr_fixture(tmp_path)
+    _move(fx, edit=True)
+    d, items = _inv_between(tmp_path, fx, "feature/repeat-end", "moved")
+    assert [(i.kind, i.change) for i in items] == [("branch", "changed")]
+    assert "monthly" in items[0].summary and items[0].file.endswith("task-resolvers.ts")

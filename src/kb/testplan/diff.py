@@ -76,3 +76,20 @@ def repo_diff(source: Path, repo: str, base: str, head: str, ignore: list[str], 
             continue
         out.append(h)
     return out
+
+
+def repo_renames(source: Path, base: str, head: str, subpath: str | None = None) -> dict[str, str]:
+    """old path -> new path for files the PR moved (with or without edits)."""
+    text = _git(Path(source), "diff", "-M", "--name-status", "--no-color", f"{base}...{head}")
+    prefix = (subpath.strip("/") + "/") if subpath else ""
+    out = {}
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0].startswith("R"):
+            old, new = parts[1], parts[2]
+            if prefix:
+                if not old.startswith(prefix) or not new.startswith(prefix):
+                    continue
+                old, new = old[len(prefix):], new[len(prefix):]
+            out[old] = new
+    return out

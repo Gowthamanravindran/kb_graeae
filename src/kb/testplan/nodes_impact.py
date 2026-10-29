@@ -12,7 +12,7 @@ from kb.errors import KbError
 from kb.llm.base import LLMRequest
 from kb.llm.json_call import ask_json
 from kb.testplan.delta import graph_delta, head_graph, symbol_spans
-from kb.testplan.diff import repo_diff
+from kb.testplan.diff import repo_diff, repo_renames
 from kb.testplan.inventory import inventory
 from kb.testplan.models import BranchRef, ChangeSet, ImpactReport, PrInfo
 from kb.testplan.reach import reach, structural_items
@@ -88,13 +88,14 @@ def resolve_change_set(state: dict, deps: ImpactDeps) -> dict:
 
 def diff(state: dict, deps: ImpactDeps) -> dict:
     cs, cfg = state["change_set"], deps.cfg
-    hunks = []
+    hunks, renames = [], {}
     for r, ref in cs.base.items():
         if cs.head[r].commit == ref.commit:
             continue
         src = git_source(cfg.repo(r), state["work"])
         hunks += repo_diff(src, r, ref.commit, cs.head[r].commit, cfg.ignore, subpath=cfg.repo(r).path)
-    return {"hunks": hunks}
+        renames.update({(r, o): n for o, n in repo_renames(src, ref.commit, cs.head[r].commit, cfg.repo(r).path).items()})
+    return {"hunks": hunks, "renames": renames}
 
 
 def head_graph_node(state: dict, deps: ImpactDeps) -> dict:
@@ -106,11 +107,11 @@ def head_graph_node(state: dict, deps: ImpactDeps) -> dict:
 def delta(state: dict, deps: ImpactDeps) -> dict:
     deps.report("Comparing with the base", 0.5)
     return {"delta": graph_delta(state["base_graph"], state["head_graph"], state["hunks"],
-                                 state["base_cos"], state["head_cos"])}
+                                 state["base_cos"], state["head_cos"], state.get("renames"))}
 
 
 def inventory_node(state: dict, deps: ImpactDeps) -> dict:
-    items = inventory(state["base_cos"], state["head_cos"], state["delta"], state["hunks"])
+    items = inventory(state["base_cos"], state["head_cos"], state["delta"], state["hunks"], state.get("renames"))
     items += structural_items(state["delta"], state["base_graph"], state["head_graph"])
     return {"inventory": items}
 

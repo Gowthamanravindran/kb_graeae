@@ -106,16 +106,33 @@ def _overlaps(a: int, b: int, start: int, length: int) -> bool:
     return not (start + length - 1 < a or start > b)
 
 
+def renamer(renames: dict[tuple[str, str], str] | None):
+    """Map a base node id to its id after the PR's file moves (repo:old#X -> repo:new#X)."""
+    renames = renames or {}
+
+    def tr(i: str) -> str:
+        if ":" not in i:
+            return i
+        repo, rest = i.split(":", 1)
+        file, sep, sym = rest.partition("#")
+        new = renames.get((repo, file))
+        return f"{repo}:{new}{sep}{sym}" if new else i
+    return tr
+
+
 def graph_delta(base: CodeGraph, head: CodeGraph, hunks: list[Hunk],
-                base_checkouts: dict[str, Checkout], head_checkouts: dict[str, Checkout]) -> GraphDelta:
+                base_checkouts: dict[str, Checkout], head_checkouts: dict[str, Checkout],
+                renames: dict[tuple[str, str], str] | None = None) -> GraphDelta:
     d = GraphDelta()
+    tr = renamer(renames)
     base_ids = {n.id for n in base.nodes()}
+    base_tr = {tr(i) for i in base_ids}
     head_ids = {n.id for n in head.nodes()}
     def symbol(g: CodeGraph, i: str) -> bool:
         return g.node(i).kind != "file" and not i.startswith("unresolved:")
-    d.nodes_added = sorted(i for i in head_ids - base_ids if symbol(head, i))
-    d.nodes_removed = sorted(i for i in base_ids - head_ids if symbol(base, i))
-    be = {(e.src, e.dst, e.kind) for e in base.edges()}
+    d.nodes_added = sorted(i for i in head_ids - base_tr if symbol(head, i))
+    d.nodes_removed = sorted(i for i in base_ids if tr(i) not in head_ids and symbol(base, i))
+    be = {(tr(e.src), tr(e.dst), e.kind) for e in base.edges()}
     he = {(e.src, e.dst, e.kind) for e in head.edges()}
     d.edges_added, d.edges_removed = sorted(he - be), sorted(be - he)
 
@@ -138,10 +155,10 @@ def graph_delta(base: CodeGraph, head: CodeGraph, hunks: list[Hunk],
         if h.removed:
             owners += [(nid, a, b) for nid, a, b in spans("base", h.repo, h.old_file) if _overlaps(a, b, h.old_start, h.old_len)]
         for nid, _, _ in owners:
-            changed.add(nid)
+            changed.add(tr(nid))
         if owners:
-            d.hunk_owner[i] = min(owners, key=lambda o: o[2] - o[1])[0]
+            d.hunk_owner[i] = tr(min(owners, key=lambda o: o[2] - o[1])[0])
         else:
             d.hunk_owner[i] = f"{h.repo}:{h.file}"
-    d.nodes_changed = sorted(n for n in changed if n in head_ids and n in base_ids)
+    d.nodes_changed = sorted(n for n in changed if n in head_ids and n in base_tr)
     return d

@@ -164,7 +164,7 @@ def _span(source: str | None, path: str, name: str) -> tuple[int, int] | None:
 
 
 def inventory(base_cos: dict[str, Checkout], head_cos: dict[str, Checkout], delta: GraphDelta,
-              hunks: list[Hunk]) -> list[InventoryItem]:
+              hunks: list[Hunk], renames: dict[tuple[str, str], str] | None = None) -> list[InventoryItem]:
     # (repo, base_file, head_file, function name or None for file-level, [hunk indices])
     targets: dict[tuple, list[int]] = {}
     for i, h in enumerate(hunks):
@@ -174,7 +174,7 @@ def inventory(base_cos: dict[str, Checkout], head_cos: dict[str, Checkout], delt
     for nid in delta.nodes_removed:
         repo, rest = nid.split(":", 1)
         file, name = rest.split("#", 1)
-        targets.setdefault((repo, file, file, name.split("@")[0]), [])
+        targets.setdefault((repo, file, (renames or {}).get((repo, file), file), name.split("@")[0]), [])
 
     items: dict[str, InventoryItem] = {}
 
