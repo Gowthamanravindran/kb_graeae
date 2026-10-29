@@ -245,8 +245,10 @@ The impact screen shows "Will generate X of Y · about N Claude calls". Nothing 
 
 There is a new sidebar view, **Test plans**. Clickable mocks will be supplied with this spec for approval.
 
-1. **Test plans list.**
-   - Change sets and scenario requests with status ("Impact ready", "62 of 115 written") and the people involved.
+1. **Test plans list**, with two tabs:
+   - **Test Plan for PR** (Feature B): the PR plans with their per-repo changes, progress and people, and the **New PR test plan** form.
+   - **Test Scenarios in a Branch** (Feature A): the scenario plans with their analysed branch, progress and people, and the **New scenario test plan** form (scenario text plus an analysed branch set).
+   - Both lists show status ("Impact ready", "62 of 115 written") and the people involved.
    - **New PR test plan**: a table with one row per repo: **Base** and **PR branch** side by side, the base pre-filled from `default_branch`; leaving a PR branch blank means that repo is unchanged. A GitHub link per repo fills that row in.
    - **New scenario test plan**: free text, or started from **Make test plan** in Ask or Memory.
 2. **Impact.**
