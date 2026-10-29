@@ -9,10 +9,11 @@ import { MapView } from "./views/MapView";
 import { Ask } from "./views/Ask";
 import { Memory } from "./views/Memory";
 import { Settings } from "./views/Settings";
+import { Impact } from "./views/Impact";
 import { TestPlans } from "./views/TestPlans";
 
 function Main() {
-  const { view, project, branch, go } = useApp();
+  const { view, project, branch, go, planScreen, planId } = useApp();
   return (
     <div className="flex h-full">
       <ErrorBoundary key={`side-${project}`}><Sidebar /></ErrorBoundary>
@@ -22,7 +23,7 @@ function Main() {
         {view === "map" && <MapView />}
         {view === "ask" && <Ask key={`${project}@${branch}`} />}
         {view === "memory" && <Memory key={`${project}@${branch}`} />}
-        {view === "testplans" && <TestPlans key={project ?? ""} />}
+        {view === "testplans" && (planScreen === "impact" && planId ? <Impact key={planId} /> : <TestPlans key={project ?? ""} />)}
         {view === "settings" && <Settings />}
         </ErrorBoundary>
       </main>

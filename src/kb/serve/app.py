@@ -108,6 +108,7 @@ class ScenarioPlanIn(BaseModel):
 class GenerateIn(BaseModel):
     counts: dict[str, int] = {}
     per_flow_cap: int | None = None
+    flow_ids: list[str] | None = None
 
 
 class LoginIn(BaseModel):
@@ -528,7 +529,7 @@ def create_app(settings: ServeSettings) -> FastAPI:
                 "extras": [c.model_dump(mode="json") for c in cases if c.suggested and c.status == "suggested"],
                 "coverage": coverage_for(ps, cfg.project, label, plan_id).model_dump()}
 
-    def _design_job(cfg, plan_id: str, label: str, mode: str, counts: dict, cap, only=None):
+    def _design_job(cfg, plan_id: str, label: str, mode: str, counts: dict, cap, only=None, flow_ids=None):
         from kb.cli import _author
         from kb.testplan import graph_design
         from kb.tracing import make_tracer
@@ -536,7 +537,7 @@ def create_app(settings: ServeSettings) -> FastAPI:
         def run(rep):
             res = graph_design.run_design(cfg, plan_id, label, settings.store(), settings.provider(), make_tracer(cfg),
                                           mode, counts, cap, progress=lambda text, frac: rep.step(text, frac),
-                                          author=_author(), only=only)
+                                          author=_author(), only=only, flow_ids=flow_ids)
             return res.model_dump()
         return {"job_id": submit_or_409(jobs, "testplan", run, key=f"testplan:{cfg.project}:{plan_id}",
                                         scope=branch_scope(cfg.project, label)).id}
@@ -546,7 +547,8 @@ def create_app(settings: ServeSettings) -> FastAPI:
         cfg = ws.config(name)
         ps, label = _plan(cfg, plan_id)
         kind = ps.load_change_set(cfg.project, label, plan_id).kind
-        return _design_job(cfg, plan_id, label, "scenario" if kind == "scenario" else "more", body.counts, body.per_flow_cap)
+        return _design_job(cfg, plan_id, label, "scenario" if kind == "scenario" else "more", body.counts, body.per_flow_cap,
+                           flow_ids=body.flow_ids)
 
     @app.post("/api/projects/{name}/testplans/{plan_id}/slots/{slot_id}/retry")
     def retry_slot(name: str, plan_id: str, slot_id: str) -> dict:

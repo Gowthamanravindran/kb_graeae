@@ -38,8 +38,8 @@ export function createClient({ baseUrl, token }: { baseUrl: string; token: strin
     newScenarioPlan: (p: string, body: { label: string; text?: string; answer_id?: string }) =>
       call<JobRef>("POST", `/api/projects/${encodeURIComponent(p)}/testplans/scenario`, body),
     testplan: (p: string, id: string) => call<TestPlanDetail>("GET", `${tp(p, id)}`),
-    generate: (p: string, id: string, counts: Partial<Record<Priority, number>>, perFlowCap: number | null = null) =>
-      call<JobRef>("POST", `${tp(p, id)}/generate`, { counts, per_flow_cap: perFlowCap }),
+    generate: (p: string, id: string, counts: Partial<Record<Priority, number>>, perFlowCap: number | null = null, flowIds?: string[]) =>
+      call<JobRef>("POST", `${tp(p, id)}/generate`, flowIds ? { counts, per_flow_cap: perFlowCap, flow_ids: flowIds } : { counts, per_flow_cap: perFlowCap }),
     acceptExtra: (p: string, id: string, caseId: string) => call<{ ok: boolean }>("POST", `${tp(p, id)}/extras/${encodeURIComponent(caseId)}/accept`),
     dismissExtra: (p: string, id: string, caseId: string) => call<{ ok: boolean }>("POST", `${tp(p, id)}/extras/${encodeURIComponent(caseId)}/dismiss`),
     retrySlot: (p: string, id: string, slotId: string) => call<JobRef>("POST", `${tp(p, id)}/slots/${encodeURIComponent(slotId)}/retry`),

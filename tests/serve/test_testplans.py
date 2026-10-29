@@ -121,3 +121,14 @@ def test_scenario_plan_route(app):
 def test_unknown_plan_404(app):
     c, *_ = app
     assert c.get("/api/projects/mini/testplans/nope").status_code == 404
+
+
+def test_generate_only_ticked_flows(app):
+    c, fx, _ = app
+    pid = _pr(c, fx)
+    fid = c.get(f"/api/projects/mini/testplans/{pid}").json()["impact"]["flows"][0]["id"]
+    j = wait(c, c.post(f"/api/projects/mini/testplans/{pid}/generate",
+                       json={"counts": {"P0": 2}, "flow_ids": ["someone-else"]}).json()["job_id"])
+    assert j["result"]["written"] == 0
+    j = wait(c, c.post(f"/api/projects/mini/testplans/{pid}/generate", json={"counts": {"P0": 2}, "flow_ids": [fid]}).json()["job_id"])
+    assert j["result"]["written"] == 2
