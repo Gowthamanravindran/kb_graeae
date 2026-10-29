@@ -29,6 +29,7 @@ class Manifest(BaseModel):
     stats: dict[str, int] = Field(default_factory=dict)
     failed_modules: list[str] = Field(default_factory=list)
     synced: bool = False  # True once this base came from / went to a registry
+    branches: dict[str, str] = Field(default_factory=dict)  # repo -> branch (a branch set; empty = `branch` everywhere)
 
 
 class Module(BaseModel):

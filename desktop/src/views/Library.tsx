@@ -46,24 +46,58 @@ function Progress({ jobId, onDone }: { jobId: string; onDone(): void }) {
   );
 }
 
-function AnalyseDialog({ open, onOpenChange, onStart }: { open: boolean; onOpenChange(o: boolean): void; onStart(branch: string, resume: boolean): void }) {
+function AnalyseDialog({ open, onOpenChange, onStart, repos }: {
+  open: boolean; onOpenChange(o: boolean): void; repos: { name: string; default_branch?: string | null }[];
+  onStart(label: string, resume: boolean, branches?: Record<string, string>): void;
+}) {
   const [branch, setBranch] = useState("");
   const [resume, setResume] = useState(false);
+  const [perRepo, setPerRepo] = useState(false);
+  const [label, setLabel] = useState("");
+  const [map, setMap] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (open) setMap(Object.fromEntries(repos.map((r) => [r.name, r.default_branch ?? ""])));
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ready = perRepo ? !!label.trim() && repos.every((r) => (map[r.name] ?? "").trim()) : !!branch.trim();
+  const submit = () => {
+    if (perRepo) onStart(label.trim(), resume, Object.fromEntries(repos.map((r) => [r.name, map[r.name].trim()])));
+    else onStart(branch.trim(), resume);
+    onOpenChange(false);
+  };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogTitle>Analyse a branch</DialogTitle>
         <p className="mb-4 text-sm text-muted">Builds the code map and names the modules. Larger codebases take up to an hour; you can keep using the app.</p>
-        <form className="flex flex-col gap-3" onSubmit={(e) => { e.preventDefault(); onStart(branch.trim(), resume); onOpenChange(false); }}>
-          <label className="text-sm font-semibold" htmlFor="branch">Branch</label>
-          <Input id="branch" value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
+        <form className="flex flex-col gap-3" onSubmit={(e) => { e.preventDefault(); if (ready) submit(); }}>
+          <div className="flex items-center gap-2">
+            <Checkbox id="perrepo" checked={perRepo} onCheckedChange={(v) => setPerRepo(v === true)} />
+            <label htmlFor="perrepo" className="text-sm">Different branch per repo</label>
+          </div>
+          {perRepo ? (
+            <>
+              {repos.map((r) => (
+                <div key={r.name} className="flex flex-col gap-1">
+                  <label className="text-sm font-semibold" htmlFor={`br-${r.name}`}>{r.name} branch</label>
+                  <Input id={`br-${r.name}`} value={map[r.name] ?? ""} onChange={(e) => setMap((m) => ({ ...m, [r.name]: e.target.value }))} placeholder="master" />
+                </div>
+              ))}
+              <label className="text-sm font-semibold" htmlFor="label">Name for this analysis</label>
+              <Input id="label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="production" />
+            </>
+          ) : (
+            <>
+              <label className="text-sm font-semibold" htmlFor="branch">Branch</label>
+              <Input id="branch" value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
+            </>
+          )}
           <div className="flex items-center gap-2">
             <Checkbox id="resume" checked={resume} onCheckedChange={(v) => setResume(v === true)} />
             <label htmlFor="resume" className="text-sm">Resume where it stopped</label>
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={!branch.trim()}>Start analysis</Button>
+            <Button type="submit" disabled={!ready}>Start analysis</Button>
           </div>
         </form>
       </DialogContent>
@@ -156,6 +190,9 @@ export function Library() {
                   <td className="px-6 py-4">
                     <div className="font-semibold">{r.branch}</div>
                     <div className="text-xs text-muted">{lo ? `Analysed ${ago(lo.created_at)}${lo.author ? ` by ${lo.author}` : ""}` : r.remote ? `Shared by ${r.remote.created_by}` : ""}</div>
+                    {lo?.branches && new Set(Object.values(lo.branches)).size > 1 && (
+                      <div className="font-mono text-xs text-muted">{Object.entries(lo.branches).map(([k, v]) => `${k} ${v}`).join(" · ")}</div>
+                    )}
                   </td>
                   <td className="px-4 py-4 font-mono text-xs text-muted">{Object.entries(commits).map(([k, v]) => <div key={k}>{k} {v.slice(0, 12)}</div>)}</td>
                   {jobId ? (
@@ -195,7 +232,8 @@ export function Library() {
           </tbody>
         </table>
       </Card>
-      <AnalyseDialog open={analysing} onOpenChange={setAnalysing} onStart={(b, resume) => { set({ branch: b }); void start(b, () => api.analyze(project, b, resume)); }} />
+      <AnalyseDialog open={analysing} onOpenChange={setAnalysing} repos={current?.repos ?? []}
+        onStart={(b, resume, branches) => { set({ branch: b }); void start(b, () => (branches ? api.analyze(project, b, resume, branches) : api.analyze(project, b, resume))); }} />
       <LoginDialog open={login} onOpenChange={setLogin} />
     </div>
   );

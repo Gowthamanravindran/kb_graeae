@@ -177,7 +177,7 @@ def pull_pack(project: str, branch: str, store: PackStore, client: RegistryClien
         from kb.analyze import _mark_stale
         from kb.ask import available_checkouts
 
-        checkouts, more2 = available_checkouts(cfg, branch, store, manifest.commits)
+        checkouts, more2 = available_checkouts(cfg, branch, store, manifest.commits, manifest.branches)
         warnings += more2
         _mark_stale(store, project, branch, checkouts)
     pack = store.load(project, branch)

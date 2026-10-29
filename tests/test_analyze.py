@@ -119,3 +119,48 @@ def test_cli_analyze_llm_unavailable_exit_2(setup, monkeypatch):
     r = CliRunner().invoke(app, ["analyze", str(root / "kb.yaml"), "--branch", "main"])
     assert r.exit_code == 2
     assert "Claude Code is not available" in r.output and "Traceback" not in r.output
+
+
+def _gitify(path, branch):
+    import subprocess
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=path, check=True, capture_output=True)
+    g("init", "-q", "-b", branch)
+    g("config", "user.email", "t@t")
+    g("config", "user.name", "t")
+    g("add", ".")
+    g("commit", "-qm", "init")
+
+
+def test_analyze_records_branches_per_repo(setup):
+    cfg, store, root = setup
+    _gitify(root / "mini-fe", "master")
+    _gitify(root / "mini-be", "develop")
+    branches = {"mini-fe": "master", "mini-be": "develop"}
+    m = run_analyze(cfg, "production", store, FakeProvider(default=DRAFT), RecordingTracer(), author="me",
+                    branches=branches)
+    assert m.branches == branches and m.branch == "production"
+    assert store.load("mini", "production").manifest.branches == branches
+    assert store.find_pack_by_branches("mini", branches) == "production"
+    assert store.find_pack_by_branches("mini", {"mini-fe": "master", "mini-be": "main"}) is None
+
+
+def test_find_pack_by_branches_legacy_manifest(setup):
+    cfg, store, root = setup
+    run_analyze(cfg, "main", store, FakeProvider(default=DRAFT), RecordingTracer(), author="me")
+    assert store.find_pack_by_branches("mini", {"mini-fe": "main", "mini-be": "main"}) == "main"
+
+
+def test_cli_analyze_per_repo_branches(setup, monkeypatch):
+    from kb.cli import app
+
+    cfg, store, root = setup
+    _gitify(root / "mini-fe", "master")
+    _gitify(root / "mini-be", "develop")
+    monkeypatch.setenv("KB_HOME", str(root / "home"))
+    monkeypatch.setattr("kb.cli.get_provider", lambda: FakeProvider(default=DRAFT))
+    r = CliRunner().invoke(app, ["analyze", str(root / "kb.yaml"), "--branch", "mini-fe=master",
+                                 "--branch", "mini-be=develop", "--label", "production"])
+    assert r.exit_code == 0, r.output
+    assert "mini@production" in r.stdout and "mini-fe=master" in r.stdout

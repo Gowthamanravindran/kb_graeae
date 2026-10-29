@@ -30,9 +30,10 @@ def _work_dir(store: PackStore, project: str, branch: str) -> Path:
     return store.kb_home / "work" / f"{project}@{branch.replace('/', '__')}"
 
 
-def resolve_checkouts(cfg: ProjectConfig, branch: str, store: PackStore) -> dict[str, Checkout]:
+def resolve_checkouts(cfg: ProjectConfig, branch: str, store: PackStore,
+                      branches: dict[str, str] | None = None) -> dict[str, Checkout]:
     work = _work_dir(store, cfg.project, branch)
-    return {r.name: checkout_repo(r, branch, work / "repos") for r in cfg.repos}
+    return {r.name: checkout_repo(r, (branches or {}).get(r.name, branch), work / "repos") for r in cfg.repos}
 
 
 def context_text(cfg: ProjectConfig, checkouts: dict[str, Checkout]) -> str:
@@ -52,14 +53,16 @@ def _commits_key(commits: dict[str, str]) -> str:
 
 
 def run_analyze(cfg: ProjectConfig, branch: str, store: PackStore, provider: LLMProvider, tracer,
-                resume: bool = False, author: str = "unknown", progress=None) -> Manifest:
+                resume: bool = False, author: str = "unknown", progress=None,
+                branches: dict[str, str] | None = None) -> Manifest:
+    """`branch` is the pack's label; `branches` (a branch set) picks each repo's branch, default `branch`."""
     report = progress or (lambda text, frac: None)
     work = _work_dir(store, cfg.project, branch)
     project = cfg.project
     with tracer.trace("analyze", {"project": project, "branch": branch}) as root:
         report("Checking out code", 0.02)
         with tracer.span("checkout") as sp:
-            checkouts = resolve_checkouts(cfg, branch, store)
+            checkouts = resolve_checkouts(cfg, branch, store, branches)
             commits = {k: v.commit for k, v in checkouts.items()}
             sp.end(output=commits)
 
@@ -95,6 +98,7 @@ def run_analyze(cfg: ProjectConfig, branch: str, store: PackStore, provider: LLM
         stats = {"files": n_files, "unparsed": unparsed, "nodes": len(merged.nodes()),
                  "links_resolved": resolved, "links_unresolved": len(links) - resolved, "modules": 0}
         manifest = Manifest(project=project, branch=branch, commits=commits, author=author,
+                            branches={r.name: (branches or {}).get(r.name, branch) for r in cfg.repos},
                             created_at=datetime.now(timezone.utc), status="incomplete", stats=stats)
         store.write_base(project, branch, manifest, graphs, links, [], "", link_nodes=link_nodes)
         _mark_stale(store, project, branch, checkouts)

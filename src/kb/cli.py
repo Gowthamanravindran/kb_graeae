@@ -61,7 +61,9 @@ def _author() -> str:
 @handle_errors
 def analyze(
     config: Path = typer.Argument(..., help="Path to kb.yaml"),
-    branch: str = typer.Option(..., "--branch", "-b", help="Branch to analyse (any label for plain folders)"),
+    branch: list[str] = typer.Option(..., "--branch", "-b",
+                                     help="Branch to analyse (any label for plain folders), or repo=branch per repo"),
+    label: str = typer.Option(None, "--label", help="Name for a pack with different branches per repo"),
     resume: bool = typer.Option(False, "--resume", help="Reuse module names already produced for these commits"),
 ) -> None:
     """Analyse a repo set at a branch into a local pack."""
@@ -70,11 +72,17 @@ def analyze(
     from kb.packs.store import PackStore
     from kb.tracing import make_tracer
 
+    from kb.config import resolve_branch_set
+
     cfg = load_config(config)
+    branch, branches = resolve_branch_set(cfg, branch, label)
     store = PackStore()
-    m = run_analyze(cfg, branch, store, get_provider(), make_tracer(cfg), resume=resume, author=_author())
+    m = run_analyze(cfg, branch, store, get_provider(), make_tracer(cfg), resume=resume, author=_author(),
+                    branches=branches)
     s = m.stats
     typer.echo(f"{cfg.project}@{branch}: {m.status}")
+    if len(set(m.branches.values())) > 1:
+        typer.echo("  branches: " + ", ".join(f"{k}={v}" for k, v in m.branches.items()))
     typer.echo("  commits: " + ", ".join(f"{k}={v[:12]}" for k, v in m.commits.items()))
     typer.echo(f"  files {s.get('files', 0)} (unparsed {s.get('unparsed', 0)}), nodes {s.get('nodes', 0)}")
     typer.echo(f"  links {s.get('links_resolved', 0)} resolved, {s.get('links_unresolved', 0)} unresolved")

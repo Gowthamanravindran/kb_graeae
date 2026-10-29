@@ -28,7 +28,7 @@ class Workspace:
             try:
                 cfg = load_config(Path(p))
                 out.append({"name": cfg.project, "config_path": p, "registry": cfg.registry,
-                            "repos": [{"name": r.name, "role": r.role} for r in cfg.repos],
+                            "repos": [{"name": r.name, "role": r.role, "default_branch": r.default_branch} for r in cfg.repos],
                             "linkers": [lk.type for lk in cfg.linkers]})
             except ConfigError as e:
                 out.append({"name": Path(p).stem, "config_path": p, "registry": None, "error": str(e)})

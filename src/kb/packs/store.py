@@ -83,6 +83,21 @@ class PackStore:
     def pack_dir(self, project: str, branch: str) -> Path:
         return self.kb_home / "packs" / f"{project}@{branch.replace('/', '__')}"
 
+    def find_pack_by_branches(self, project: str, branches: dict[str, str]) -> str | None:
+        """Label of the newest pack of `project` analysed with exactly this branch per repo."""
+        best = None
+        for d in (self.kb_home / "packs").glob(f"{project}@*"):
+            mf = d / "manifest.json"
+            if not mf.exists():
+                continue
+            m = Manifest.model_validate_json(mf.read_text())
+            if m.project != project:
+                continue
+            have = m.branches or {repo: m.branch for repo in m.commits}
+            if have == branches and (best is None or m.created_at > best.created_at):
+                best = m
+        return best.branch if best else None
+
     def exists(self, project: str, branch: str) -> bool:
         return (self.pack_dir(project, branch) / "manifest.json").exists()
 

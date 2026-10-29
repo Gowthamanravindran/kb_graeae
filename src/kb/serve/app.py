@@ -103,6 +103,7 @@ class SsoIn(BaseModel):
 
 class AnalyzeIn(BaseModel):
     resume: bool = False
+    branches: dict[str, str] | None = None  # a branch per repo; the path's branch is then the pack's label
 
 
 class AskIn(BaseModel):
@@ -273,7 +274,7 @@ def create_app(settings: ServeSettings) -> FastAPI:
         cfg = ws.config(name)
 
         def run(rep):
-            m = run_analyze(cfg, branch, settings.store(), settings.provider(), make_tracer(cfg), resume=body.resume,
+            m = run_analyze(cfg, branch, settings.store(), settings.provider(), make_tracer(cfg), resume=body.resume, branches=body.branches,
                             author=_author(), progress=lambda text, frac: rep.step(text, frac))
             return {"status": m.status, "stats": m.stats, "failed_modules": m.failed_modules}
         return {"job_id": submit_or_409(jobs, "analyze", run, key=_branch_key(cfg.project, branch),
@@ -426,7 +427,7 @@ def create_app(settings: ServeSettings) -> FastAPI:
 
         cfg = ws.config(name)
         pack = settings.store().load(cfg.project, branch)
-        checkouts, _ = available_checkouts(cfg, branch, settings.store(), pack.manifest.commits)
+        checkouts, _ = available_checkouts(cfg, branch, settings.store(), pack.manifest.commits, pack.manifest.branches)
         co = checkouts.get(repo)
         not_found = HTTPException(404, f"file not found in your checkout of {repo}")
         if co is None or Path(file).is_absolute():

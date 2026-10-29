@@ -74,3 +74,32 @@ def test_analyze_job_reports_module_progress(tmp_path, serve):
     assert any(s.startswith("Naming modules (") for s in steps) or j["step"].startswith("Writing")
     second = c.post("/api/projects/mini2/branches/main/analyze", json={"resume": False})
     assert second.status_code in (200, 409)
+
+
+def test_analyze_accepts_branch_map(tmp_path, serve):
+    import subprocess
+    import time
+
+    c, settings, store, provider, cfg = serve
+    from agent_helpers import FIX
+
+    for r, br in (("mini-fe", "master"), ("mini-be", "develop")):
+        d = tmp_path / "src" / r
+        shutil.copytree(FIX / r, d)
+        for args in (["init", "-q", "-b", br], ["config", "user.email", "t@t"], ["config", "user.name", "t"],
+                     ["add", "."], ["commit", "-qm", "init"]):
+            subprocess.run(["git", *args], cwd=d, check=True, capture_output=True)
+    y = tmp_path / "copy.kb.yaml"
+    text = cfg.read_text().replace(str(FIX), str(tmp_path / "src")).replace("project: mini", "project: mini3")
+    y.write_text(text.replace("role: frontend,", "role: frontend, default_branch: master,"))
+    c.post("/api/projects", json={"config_path": str(y)})
+    assert [r.get("default_branch") for r in c.get("/api/projects").json()[-1]["repos"]] == ["master", None]
+    provider.default = "```json\n" + json.dumps({"name": "Tasks", "summary": "S.", "entry_points": []}) + "\n```"
+    job = c.post("/api/projects/mini3/branches/production/analyze",
+                 json={"resume": False, "branches": {"mini-fe": "master", "mini-be": "develop"}}).json()["job_id"]
+    end = time.time() + 60
+    while time.time() < end and c.get(f"/api/jobs/{job}").json()["state"] not in ("done", "failed"):
+        time.sleep(0.05)
+    assert c.get(f"/api/jobs/{job}").json()["state"] == "done", c.get(f"/api/jobs/{job}").json()["error"]
+    row = next(r for r in c.get("/api/projects/mini3/branches").json()["rows"] if r["branch"] == "production")
+    assert row["local"]["branches"] == {"mini-fe": "master", "mini-be": "develop"}

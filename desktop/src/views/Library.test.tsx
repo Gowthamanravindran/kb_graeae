@@ -73,3 +73,21 @@ test("search filters branches and Open goes to the map", async () => {
   await userEvent.type(screen.getByLabelText("Search branches"), "release");
   await waitFor(() => expect(screen.queryByText("main", { selector: "div" })).not.toBeInTheDocument());
 });
+
+test("analyse_dialog_per_repo_branches", async () => {
+  const a = api({ analyze: vi.fn(async () => ({ job_id: "j9" })) });
+  renderApp(<Library />, a);
+  await userEvent.click(await screen.findByRole("button", { name: "Analyse a branch" }));
+  await userEvent.click(screen.getByLabelText("Different branch per repo"));
+  await userEvent.type(screen.getByLabelText("sop-web branch"), "master");
+  await userEvent.type(screen.getByLabelText("sop-backend branch"), "develop");
+  await userEvent.type(screen.getByLabelText("Name for this analysis"), "production");
+  await userEvent.click(screen.getByRole("button", { name: "Start analysis" }));
+  expect(a.analyze).toHaveBeenCalledWith("sop", "production", false, { "sop-web": "master", "sop-backend": "develop" });
+});
+
+test("rows_show_per_repo_branches", async () => {
+  const prod = { ...local, branches: { "sop-web": "master", "sop-backend": "develop" } };
+  renderApp(<Library />, api({ branches: vi.fn(async () => ({ rows: [{ branch: "production", local: prod, remote: null, state: "local-only", job_id: null }], registry_error: null })) }));
+  expect(await screen.findByText("sop-web master · sop-backend develop")).toBeInTheDocument();
+});
