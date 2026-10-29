@@ -21,11 +21,7 @@ def load_credentials(kb_home: Path) -> dict:
     return json.loads(p.read_text()) if p.exists() else {}
 
 
-def save_token(kb_home: Path, registry_url: str, token: str, kind: Literal["static", "oidc"],
-               refresh_token: str | None = None, expires_at: float | None = None) -> None:
-    creds = load_credentials(kb_home)
-    creds[norm_url(registry_url)] = {"token": token, "kind": kind, "refresh_token": refresh_token,
-                                     "expires_at": expires_at}
+def _write(kb_home: Path, creds: dict) -> None:
     p = _path(kb_home)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
@@ -34,6 +30,22 @@ def save_token(kb_home: Path, registry_url: str, token: str, kind: Literal["stat
         json.dump(creds, f, indent=1)
     os.chmod(tmp, 0o600)
     os.replace(tmp, p)
+
+
+def forget_token(kb_home: Path, registry_url: str) -> bool:
+    creds = load_credentials(kb_home)
+    found = creds.pop(norm_url(registry_url), None) is not None
+    if found:
+        _write(kb_home, creds)
+    return found
+
+
+def save_token(kb_home: Path, registry_url: str, token: str, kind: Literal["static", "oidc"],
+               refresh_token: str | None = None, expires_at: float | None = None) -> None:
+    creds = load_credentials(kb_home)
+    creds[norm_url(registry_url)] = {"token": token, "kind": kind, "refresh_token": refresh_token,
+                                     "expires_at": expires_at}
+    _write(kb_home, creds)
 
 
 def get_token(kb_home: Path, registry_url: str) -> dict | None:

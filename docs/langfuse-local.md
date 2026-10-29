@@ -16,6 +16,10 @@ Open http://localhost:3000, sign up (local account), create an organisation and 
 
 ## 2. Point kb at it
 
+In the desktop app, open **Settings** and enter the public key, secret key and host, then click **Save** and **Test connection**. Settings writes the same file the CLI reads.
+
+Without the app, edit the file directly:
+
 Put the keys in **`~/.kb/kb.env`** (or `$KB_HOME/kb.env`). The CLI and the desktop app both read it,
 including when the app is opened from Finder:
 

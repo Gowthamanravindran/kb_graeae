@@ -80,6 +80,18 @@ class ProjectIn(BaseModel):
     config_path: str
 
 
+SETTINGS_KEYS = ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST", "GITHUB_TOKEN")
+PLAIN_SETTINGS = {"LANGFUSE_HOST"}
+
+
+class SettingsIn(BaseModel):
+    values: dict[str, str | None]
+
+
+class LogoutIn(BaseModel):
+    registry: str
+
+
 class LoginIn(BaseModel):
     registry: str
     token: str
@@ -184,6 +196,46 @@ def create_app(settings: ServeSettings) -> FastAPI:
         me = sc.RegistryClient(url, body.token, http=sc.make_http(url)).me()
         save_token(settings.kb_home, url, body.token, "static")
         return {"email": me["email"]}
+
+    @app.post("/api/logout")
+    def logout(body: LogoutIn) -> dict:
+        from kb.sync.credentials import forget_token
+
+        return {"forgotten": forget_token(settings.kb_home, body.registry)}
+
+    # ---------- settings (kb.env) ----------
+
+    def _settings_view() -> dict:
+        from kb.envfile import env_source, read_env_file
+
+        path = settings.kb_home / "kb.env"
+        filed = read_env_file(path)
+        values = {}
+        for k in SETTINGS_KEYS:
+            src = env_source(path, k)
+            val = os.environ.get(k) if src == "environment" else filed.get(k)
+            item = {"set": bool(val), "last4": val[-4:] if val else None, "source": src if val else None}
+            if k in PLAIN_SETTINGS:
+                item["value"] = val
+            values[k] = item
+        return {"env_path": str(path), "values": values}
+
+    @app.get("/api/settings")
+    def get_settings() -> dict:
+        return _settings_view()
+
+    @app.put("/api/settings")
+    def put_settings(body: SettingsIn) -> dict:
+        from kb.envfile import apply_setting, write_env_file
+
+        for k in body.values:
+            if k not in SETTINGS_KEYS:
+                raise HTTPException(400, f"unknown setting {k}")
+        clean = {k: (v.strip() or None) if isinstance(v, str) else None for k, v in body.values.items()}
+        write_env_file(settings.kb_home / "kb.env", clean)
+        for k, v in clean.items():
+            apply_setting(k, v)
+        return _settings_view()
 
     # ---------- branches, analyze, ask, push, pull ----------
 

@@ -21,3 +21,6 @@ export interface MemoryItem { qa_id: string; question: string; answer_preview: s
 export interface MemoryView { items: MemoryItem[]; suggestions: { id: string; question: string; source_qa_id: string }[]; counts: { all: number; private: number; published: number; stale: number; suggested: number } }
 export interface SavedQA { id: string; question: string; answer: string; visibility: string; stale: boolean; author: string; created_at: string; flow: { steps: Step[]; mermaid: string; module_ids: string[] } | null }
 export interface Job<T = unknown> { id: string; kind: string; key: string | null; state: "queued" | "running" | "done" | "failed"; step: string; progress: number; result: T | null; error: string | null; created_at: string; queue_position?: number | null }
+export interface SettingValue { set: boolean; last4: string | null; source: "file" | "environment" | null; value?: string | null }
+export type SettingKey = "LANGFUSE_PUBLIC_KEY" | "LANGFUSE_SECRET_KEY" | "LANGFUSE_HOST" | "GITHUB_TOKEN";
+export interface SettingsView { env_path: string; values: Record<SettingKey, SettingValue> }

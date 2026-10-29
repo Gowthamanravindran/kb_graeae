@@ -57,3 +57,22 @@ def test_serve_loads_kb_env_from_its_kb_home(tmp_path):
     finally:
         p.terminate()
         p.wait(10)
+
+
+def test_write_env_file_preserves_other_lines(tmp_path):
+    from kb.envfile import write_env_file
+
+    f = tmp_path / "kb.env"
+    f.write_text("# note\nFOO=1\nLANGFUSE_HOST=http://a\n")
+    write_env_file(f, {"LANGFUSE_HOST": "http://b", "GITHUB_TOKEN": "ghp_x"})
+    assert f.read_text() == "# note\nFOO=1\nLANGFUSE_HOST=http://b\nGITHUB_TOKEN=ghp_x\n"
+    assert (f.stat().st_mode & 0o777) == 0o600
+
+
+def test_write_env_file_removes_key(tmp_path):
+    from kb.envfile import write_env_file
+
+    f = tmp_path / "kb.env"
+    f.write_text("FOO=1\nBAR=2\n")
+    write_env_file(f, {"FOO": None})
+    assert f.read_text() == "BAR=2\n"

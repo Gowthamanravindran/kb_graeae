@@ -4,6 +4,7 @@ import { StatusFooter } from "./StatusFooter";
 
 const NAV: { view: View; label: string }[] = [
   { view: "library", label: "Library" }, { view: "map", label: "Map" }, { view: "ask", label: "Ask" }, { view: "memory", label: "Memory" },
+  { view: "settings", label: "Settings" },
 ];
 
 export function Sidebar() {

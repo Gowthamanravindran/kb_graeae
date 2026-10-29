@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { openCitation, type CitationRef } from "./citations";
 import { defaultEngineEnv } from "./env";
+import { revealConfig } from "./reveal";
 import { lockDown } from "./security";
 import { SidecarError, startSidecar, stopSidecar, type Sidecar } from "./sidecar";
 
@@ -92,6 +93,8 @@ ipcMain.handle("kb:open-external", (_e, url: string) => {
 });
 ipcMain.handle("kb:open-citation", (_e, c: CitationRef) =>
   openCitation(engine, c, { fetch: globalThis.fetch, openPath: shell.openPath, openExternal: shell.openExternal, editor: process.env.KB_EDITOR }));
+ipcMain.handle("kb:reveal-config", (_e, project: string) =>
+  revealConfig(engine, String(project), { fetch: globalThis.fetch, showItemInFolder: shell.showItemInFolder }));
 ipcMain.handle("kb:pick-file", async (_e, filters: { name: string; extensions: string[] }[]) => {
   const r = await dialog.showOpenDialog({ properties: ["openFile"], filters });
   return r.canceled ? null : r.filePaths[0];

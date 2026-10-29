@@ -1,4 +1,4 @@
-import type { AskPayload, BranchesResponse, Job, MapView, MemoryView, ProjectRow, RegistryStatus, SavedQA, Status } from "./types";
+import type { SettingKey, SettingsView, AskPayload, BranchesResponse, Job, MapView, MemoryView, ProjectRow, RegistryStatus, SavedQA, Status } from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, public detail: string) {
@@ -28,6 +28,9 @@ export function createClient({ baseUrl, token }: { baseUrl: string; token: strin
     addProject: (configPath: string) => call<ProjectRow>("POST", "/api/projects", { config_path: configPath }),
     registry: (p: string) => call<RegistryStatus>("GET", `/api/projects/${encodeURIComponent(p)}/registry`),
     login: (registry: string, token: string) => call<{ email: string }>("POST", "/api/login", { registry, token }),
+    logout: (registry: string) => call<{ forgotten: boolean }>("POST", "/api/logout", { registry }),
+    settings: () => call<SettingsView>("GET", "/api/settings"),
+    saveSettings: (values: Partial<Record<SettingKey, string | null>>) => call<SettingsView>("PUT", "/api/settings", { values }),
     loginSso: (registry: string) => call<JobRef>("POST", "/api/login/sso", { registry }),
     branches: (p: string) => call<BranchesResponse>("GET", `/api/projects/${encodeURIComponent(p)}/branches`),
     analyze: (p: string, br: string, resume = false) => call<JobRef>("POST", `${b(p, br)}/analyze`, { resume }),

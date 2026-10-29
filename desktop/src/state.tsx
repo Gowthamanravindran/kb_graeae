@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import type { Api } from "./api/client";
 import type { ProjectRow, Status } from "./api/types";
 
-export type View = "library" | "map" | "ask" | "memory";
+export type View = "library" | "map" | "ask" | "memory" | "settings";
 export interface AskSeed { qaId?: string; question?: string; jobId?: string }
 export interface UiState { project: string | null; branch: string | null; view: View; askSeed: AskSeed | null }
 
