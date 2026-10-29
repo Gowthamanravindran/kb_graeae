@@ -143,3 +143,31 @@ def test_pr_link_private_without_token(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     with pytest.raises(KbError, match="Add GITHUB_TOKEN to ~/.kb/kb.env, or pick the branches yourself"):
         github.pr_info("https://github.com/acme/x/pull/1")
+
+
+def test_reconcile_does_not_lose_a_concurrent_write(env, monkeypatch):
+    import threading
+
+    fx, cfg, store = env
+    ps = PlanStore(store)
+    rep = run_impact(cfg, _req(fx), store, _names(), RecordingTracer())
+    pid = rep.change_set_id
+    target = ps.load_slots("mini", "production", pid)[0].id
+    real_cases = PlanStore.cases
+    started = {}
+
+    def cases_with_writer(self, *a):
+        if "t" not in started:  # while reconcile is running, generation writes a case for one slot
+            def write(slots):
+                for s in slots:
+                    if s.id == target:
+                        s.status, s.case_id = "written", "TC-777"
+            started["t"] = threading.Thread(target=lambda: ps.update_slots("mini", "production", pid, write))
+            started["t"].start()
+            started["t"].join(0.5)
+        return real_cases(self, *a)
+    monkeypatch.setattr(PlanStore, "cases", cases_with_writer)
+    run_impact(cfg, _req(fx), store, _names(), RecordingTracer())
+    started["t"].join(5)
+    s = next(s for s in ps.load_slots("mini", "production", pid) if s.id == target)
+    assert (s.status, s.case_id) == ("written", "TC-777")

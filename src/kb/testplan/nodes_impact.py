@@ -219,13 +219,12 @@ def save_impact(state: dict, deps: ImpactDeps) -> dict:
 
 def reconcile(ps: PlanStore, project: str, label: str, pid: str, new_slots, previous: ImpactReport | None,
               report: ImpactReport) -> None:
-    """Spec §5: same slot id keeps its case; its code changed → stale; gone → obsolete (case kept)."""
-    old = {s.id: s for s in ps.load_slots(project, label, pid)}
+    """Spec §5: same slot id keeps its case; its code changed → stale; gone → obsolete (case kept).
+    Runs inside the slots lock, so a case written by a generation job meanwhile is never lost."""
     old_hash = (previous.graph_delta.get("function_hashes", {}) if previous else {})
     new_hash = report.graph_delta.get("function_hashes", {})
     inv = {i.id: i for i in report.inventory}
     flows = {f.id: f for f in report.flows}
-    cases = {c.id: c for c in ps.cases(project, label, pid)}
 
     def touched(slot) -> bool:
         fns = []
@@ -237,24 +236,27 @@ def reconcile(ps: PlanStore, project: str, label: str, pid: str, new_slots, prev
             fns = flows[slot.flow_id].changed_functions
         return any(old_hash.get(f) is not None and old_hash.get(f) != new_hash.get(f) for f in fns)
 
-    merged = []
-    for s in new_slots:
-        o = old.pop(s.id, None)
-        if o is not None:
-            s.status, s.case_id, s.assigned_to, s.fail_reason = o.status, o.case_id, o.assigned_to, o.fail_reason
-            if s.status == "reserved":
-                s.status = "planned"
-            if s.status in ("written", "stale") and touched(s):
-                s.status = "stale"
-                c = cases.get(s.case_id or "")
+    def merge(current: list) -> None:
+        old = {s.id: s for s in current}
+        cases = {c.id: c for c in ps.cases(project, label, pid)}
+        merged = []
+        for s in new_slots:
+            o = old.pop(s.id, None)
+            if o is not None:
+                s.status, s.case_id, s.assigned_to, s.fail_reason = o.status, o.case_id, o.assigned_to, o.fail_reason
+                s.reserved_by = o.reserved_by
+                if s.status in ("written", "stale") and touched(s):
+                    s.status = "stale"
+                    c = cases.get(s.case_id or "")
+                    if c is not None:
+                        ps.save_case(project, label, pid, c.model_copy(update={"stale": True, "status": "stale"}))
+            merged.append(s)
+        for o in old.values():  # slots whose decision point disappeared
+            if o.case_id or o.status in ("written", "stale", "obsolete"):
+                o.status = "obsolete"
+                c = cases.get(o.case_id or "")
                 if c is not None:
-                    ps.save_case(project, label, pid, c.model_copy(update={"stale": True, "status": "stale"}))
-        merged.append(s)
-    for o in old.values():  # slots whose decision point disappeared
-        if o.case_id or o.status in ("written", "stale", "obsolete"):
-            o.status = "obsolete"
-            c = cases.get(o.case_id or "")
-            if c is not None:
-                ps.save_case(project, label, pid, c.model_copy(update={"status": "obsolete"}))
-            merged.append(o)
-    ps.save_slots(project, label, pid, merged)
+                    ps.save_case(project, label, pid, c.model_copy(update={"status": "obsolete"}))
+                merged.append(o)
+        current[:] = merged
+    ps.update_slots(project, label, pid, merge)
