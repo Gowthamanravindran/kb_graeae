@@ -43,3 +43,53 @@ def test_require_git_lists_plain_folders(tmp_path):
     cfg = load_config(y)
     with pytest.raises(KbError, match="PR analysis needs git repos for: mini-fe"):
         require_git(cfg, ["mini-fe", "mini-be"], tmp_path / "work")
+
+
+def _commit_file(repo, name, text, msg):
+    (repo / name).write_text(text)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", msg)
+    return git(repo, "rev-parse", "HEAD")
+
+
+def test_url_repo_base_follows_origin(tmp_path):
+    from kb.config import RepoConfig
+
+    fx = make_pr_fixture(tmp_path)
+    repo = RepoConfig(name="mini-be", role="backend", url=str(fx.be))
+    first = worktree_at(repo, "develop", tmp_path / "work").commit
+    new = _commit_file(fx.be, "later.ts", "export const later = 1;\n", "master moved on")
+    assert new != first
+    assert worktree_at(repo, "develop", tmp_path / "work", refresh=True).commit == new  # what an impact run does
+
+
+def test_remote_only_pr_branch_new_commit_reaches_mirror(tmp_path):
+    from kb.config import RepoConfig
+
+    fx = make_pr_fixture(tmp_path)
+    # the user's clone only has the PR branch as origin/feature/repeat-end
+    user = tmp_path / "user-be"
+    git(tmp_path, "clone", "-q", str(fx.be), str(user))
+    repo = RepoConfig(name="mini-be", role="backend", local_path=user)
+    worktree_at(repo, "origin/feature/repeat-end", tmp_path / "work")
+    git(fx.be, "checkout", "-q", "feature/repeat-end")
+    new = _commit_file(fx.be, "pr2.ts", "export const two = 2;\n", "second PR commit")
+    git(fx.be, "checkout", "-q", "develop")
+    git(user, "fetch", "-q", "origin")
+    co = worktree_at(repo, "origin/feature/repeat-end", tmp_path / "work")
+    assert co.commit == new and (co.root / "pr2.ts").exists()
+
+
+def test_git_source_fetches_once_per_minute(tmp_path, monkeypatch):
+    from kb.config import RepoConfig
+    from kb.testplan import worktrees
+
+    fx = make_pr_fixture(tmp_path)
+    repo = RepoConfig(name="mini-be", role="backend", url=str(fx.be))
+    worktrees.git_source(repo, tmp_path / "work")
+    calls = []
+    real = worktrees._git
+    monkeypatch.setattr(worktrees, "_git", lambda cwd, *a: (calls.append(a), real(cwd, *a))[1])
+    worktrees.git_source(repo, tmp_path / "work")
+    worktrees.git_source(repo, tmp_path / "work")
+    assert [a for a in calls if a[0] == "fetch"] == []

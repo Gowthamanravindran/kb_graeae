@@ -73,7 +73,7 @@ def resolve_change_set(state: dict, deps: ImpactDeps) -> dict:
     label = deps.store.find_pack_by_branches(cfg.project, base)
     if label is None:
         raise KbError(f"Analyse {describe(base)} first")
-    base_cos = {r: worktree_at(cfg.repo(r), b, work) for r, b in base.items()}
+    base_cos = {r: worktree_at(cfg.repo(r), b, work, refresh=True) for r, b in base.items()}
     head_cos = {r: (worktree_at(cfg.repo(r), h, work) if h else base_cos[r]) for r, h in head.items()}
     pid = plan_id_for(cfg.project, base, {r: h or "" for r, h in head.items()})
     title = req.title or next((p.title for p in prs.values() if p.title), "") or \
