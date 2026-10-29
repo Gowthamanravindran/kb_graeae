@@ -133,3 +133,23 @@ def test_hash_changes_when_cited_lines_change_only(tmp_path):
 def test_missing_file_is_stale(tmp_path):
     c = Citation(repo="fe", file="gone.ts", line_start=1, line_end=1, content_hash="x")
     assert is_stale(c, {"fe": Checkout("fe", tmp_path, "x")})
+
+
+def test_add_suggestions_concurrent_keeps_all(tmp_path):
+    import threading
+
+    from agent_helpers import build_pack
+
+    store, _ = build_pack(tmp_path)
+    barrier = threading.Barrier(20)
+
+    def add(i):
+        barrier.wait()
+        store.add_suggestions("mini", "main", [Suggestion(id=f"s{i}", question=f"question {i}?", source_qa_id="q")])
+
+    ts = [threading.Thread(target=add, args=(i,)) for i in range(20)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert len(store.load("mini", "main").suggestions) == 20

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,9 +39,20 @@ def default_kb_home() -> Path:
     return Path(os.environ.get("KB_HOME", Path.home() / ".kb"))
 
 
+_overlay_locks: dict[Path, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def _overlay_lock(path: Path) -> threading.Lock:
+    """One in-process lock per overlay file, for read-modify-write (kb serve runs jobs in threads)."""
+    key = Path(path).resolve()
+    with _locks_guard:
+        return _overlay_locks.setdefault(key, threading.Lock())
+
+
 def _write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(data, indent=1, default=str))
     tmp.replace(path)
 
@@ -165,10 +177,11 @@ class PackStore:
 
     def add_suggestions(self, project: str, branch: str, items: list[Suggestion]) -> None:
         p = self.pack_dir(project, branch) / "overlay" / "suggestions.json"
-        existing = json.loads(p.read_text()) if p.exists() else []
-        seen = {s["question"].lower() for s in existing}
-        existing += [s.model_dump() for s in items if s.question.lower() not in seen]
-        _write_json(p, existing)
+        with _overlay_lock(p):
+            existing = json.loads(p.read_text()) if p.exists() else []
+            seen = {s["question"].lower() for s in existing}
+            existing += [s.model_dump() for s in items if s.question.lower() not in seen]
+            _write_json(p, existing)
 
     def save_module_note(self, project: str, branch: str, module_id: str, text: str) -> None:
         _write_json(_overlay_file(self.pack_dir(project, branch), "module_notes", module_id), {"text": text})
