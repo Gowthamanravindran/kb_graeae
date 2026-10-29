@@ -14,12 +14,20 @@ export function makeHome(registry?: string): { dir: string; home: string } {
   return { dir, home: out.trim().split("\n").pop()! };
 }
 
+/** A KB_HOME with the stage 5a fixture repos (git history + PR branch) and `production` analysed. */
+export function makePrHome(): { dir: string; home: string } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kbpr-"));
+  const out = execFileSync("uv", ["run", "--project", repo, "python", path.join(repo, "tests/e2e_support/make_pr_home.py"), dir],
+    { cwd: repo, encoding: "utf8" });
+  return { dir, home: out.trim().split("\n").pop()! };
+}
+
 export async function launch(env: Record<string, string>): Promise<{ app: ElectronApplication; page: Page }> {
   const app = await electron.launch({
     args: ["--no-sandbox", path.join(__dirname, "..", "dist-electron", "main.js")],
     env: {
       ...process.env,
-      PYTHONPATH: [path.join(repo, "tests/e2e_support"), path.join(repo, "tests")].join(":"),
+      PYTHONPATH: [path.join(repo, "tests/e2e_support"), path.join(repo, "tests"), path.join(repo, "tests/testplan")].join(":"),
       KB_SERVE_PROVIDER: "e2e_fakes:make_provider",
       ...env,
     } as Record<string, string>,

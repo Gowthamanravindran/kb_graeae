@@ -43,7 +43,7 @@ export function GeneratePanel({ detail, flowIds, onStart, label = "Generate" }: 
       <Card className="flex flex-col gap-3 p-5 lg:sticky lg:top-4">
         <h2 className="font-semibold">What to generate now</h2>
         <p className="text-xs text-muted">Slots are filled by priority, then by flow risk. The rest stay planned for later.</p>
-        <div className="grid grid-cols-[48px_1fr_76px] items-center gap-x-2 gap-y-2 text-sm">
+        <div className="grid grid-cols-[64px_1fr_76px] items-center gap-x-2 gap-y-2 text-sm">
           <span className="text-xs uppercase tracking-wide text-muted">Priority</span><span className="text-xs uppercase tracking-wide text-muted">Planned</span><span className="text-right text-xs uppercase tracking-wide text-muted">Now</span>
           {PRIORITIES.map((p) => (
             <div key={p} className="contents">

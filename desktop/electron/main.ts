@@ -96,6 +96,11 @@ ipcMain.handle("kb:open-citation", (_e, c: CitationRef) =>
 ipcMain.handle("kb:reveal-config", (_e, project: string) =>
   revealConfig(engine, String(project), { fetch: globalThis.fetch, showItemInFolder: shell.showItemInFolder }));
 ipcMain.handle("kb:save-file", async (_e, defaultName: string, data: Uint8Array) => {
+  if (process.env.KB_E2E_SAVE_DIR) { // end-to-end tests only: no native dialog to click
+    const p = path.join(process.env.KB_E2E_SAVE_DIR, path.basename(String(defaultName)));
+    await fs.promises.writeFile(p, Buffer.from(data));
+    return { saved: true, path: p };
+  }
   const r = await dialog.showSaveDialog({ defaultPath: path.join(app.getPath("downloads"), path.basename(String(defaultName))),
     filters: [{ name: "CSV", extensions: ["csv"] }] });
   if (r.canceled || !r.filePath) return { saved: false };
