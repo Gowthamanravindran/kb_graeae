@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -90,6 +90,24 @@ class SettingsIn(BaseModel):
 
 class LogoutIn(BaseModel):
     registry: str
+
+
+class PrPlanIn(BaseModel):
+    base: dict[str, str] = {}
+    head: dict[str, str | None] = {}
+    pr_links: dict[str, str] = {}
+    title: str = ""
+
+
+class ScenarioPlanIn(BaseModel):
+    label: str
+    text: str | None = None
+    answer_id: str | None = None
+
+
+class GenerateIn(BaseModel):
+    counts: dict[str, int] = {}
+    per_flow_cap: int | None = None
 
 
 class LoginIn(BaseModel):
@@ -437,6 +455,154 @@ def create_app(settings: ServeSettings) -> FastAPI:
         if not target.is_relative_to(root) or not target.is_file():
             raise not_found
         return {"path": str(target), "line": max(1, line)}
+
+    # ---------- test plans (stage 5a) ----------
+
+    def _plan(cfg, plan_id: str):
+        from kb.testplan.store import PlanStore
+
+        ps = PlanStore(settings.store())
+        try:
+            label = ps.find(cfg.project, plan_id)
+        except KbError:
+            label = None
+        if label is None:
+            raise HTTPException(404, f"no test plan {plan_id}")
+        return ps, label
+
+    @app.get("/api/projects/{name}/testplans")
+    def list_testplans(name: str, kind: str | None = None) -> list[dict]:
+        from kb.testplan.store import PlanStore
+
+        cfg = ws.config(name)
+        return [r.model_dump(mode="json") for r in PlanStore(settings.store()).list_plans(cfg.project)
+                if kind is None or r.kind == kind]
+
+    @app.post("/api/projects/{name}/testplans/pr")
+    def new_pr_plan(name: str, body: PrPlanIn) -> dict:
+        from kb.cli import _author
+        from kb.testplan.graph_impact import ChangeSetRequest, run_impact
+        from kb.tracing import make_tracer
+
+        cfg = ws.config(name)
+        req = ChangeSetRequest(project=cfg.project, base=body.base, head=body.head, pr_links=body.pr_links, title=body.title)
+
+        def run(rep):
+            r = run_impact(cfg, req, settings.store(), settings.provider(), make_tracer(cfg),
+                           progress=lambda text, frac: rep.step(text, frac), author=_author())
+            return {"plan_id": r.change_set_id, "flows": len(r.flows), "inventory": len(r.inventory)}
+        return {"job_id": submit_or_409(jobs, "testplan", run, key=f"testplan-impact:{cfg.project}").id}
+
+    @app.post("/api/projects/{name}/testplans/scenario")
+    def new_scenario_plan(name: str, body: ScenarioPlanIn) -> dict:
+        from kb.cli import _author
+        from kb.testplan.scenario import plan_scenario
+        from kb.tracing import make_tracer
+
+        cfg = ws.config(name)
+        _readable(cfg.project, body.label)
+        settings.store().load(cfg.project, body.label)  # 400 now if there is no analysis
+
+        def run(rep):
+            rep.step("Finding the flow", 0.2)
+            sp = plan_scenario(cfg, body.label, settings.store(), settings.provider(), make_tracer(cfg),
+                               text=body.text, answer_id=body.answer_id, author=_author())
+            return {"plan_id": sp.plan_id, "counts": sp.counts}
+        return {"job_id": submit_or_409(jobs, "testplan", run, scope=branch_scope(cfg.project, body.label)).id}
+
+    @app.get("/api/projects/{name}/testplans/{plan_id}")
+    def get_testplan(name: str, plan_id: str) -> dict:
+        from kb.testplan.graph_design import coverage_for
+
+        cfg = ws.config(name)
+        ps, label = _plan(cfg, plan_id)
+        summary = next((r for r in ps.list_plans(cfg.project) if r.id == plan_id), None)
+        impact = ps.load_impact(cfg.project, label, plan_id)
+        cases = ps.cases(cfg.project, label, plan_id)
+        return {"summary": summary.model_dump(mode="json") if summary else None,
+                "change_set": ps.load_change_set(cfg.project, label, plan_id).model_dump(mode="json"),
+                "impact": impact.model_dump(mode="json") if impact else None,
+                "slots": [s.model_dump(mode="json") for s in ps.load_slots(cfg.project, label, plan_id)],
+                "scenarios": [s.model_dump(mode="json") for s in ps.scenarios(cfg.project, label, plan_id)],
+                "cases": [c.model_dump(mode="json") for c in cases if not c.suggested and c.status != "dismissed"],
+                "extras": [c.model_dump(mode="json") for c in cases if c.suggested and c.status == "suggested"],
+                "coverage": coverage_for(ps, cfg.project, label, plan_id).model_dump()}
+
+    def _design_job(cfg, plan_id: str, label: str, mode: str, counts: dict, cap, only=None):
+        from kb.cli import _author
+        from kb.testplan import graph_design
+        from kb.tracing import make_tracer
+
+        def run(rep):
+            res = graph_design.run_design(cfg, plan_id, label, settings.store(), settings.provider(), make_tracer(cfg),
+                                          mode, counts, cap, progress=lambda text, frac: rep.step(text, frac),
+                                          author=_author(), only=only)
+            return res.model_dump()
+        return {"job_id": submit_or_409(jobs, "testplan", run, key=f"testplan:{cfg.project}:{plan_id}",
+                                        scope=branch_scope(cfg.project, label)).id}
+
+    @app.post("/api/projects/{name}/testplans/{plan_id}/generate")
+    def generate_cases(name: str, plan_id: str, body: GenerateIn) -> dict:
+        cfg = ws.config(name)
+        ps, label = _plan(cfg, plan_id)
+        kind = ps.load_change_set(cfg.project, label, plan_id).kind
+        return _design_job(cfg, plan_id, label, "scenario" if kind == "scenario" else "more", body.counts, body.per_flow_cap)
+
+    @app.post("/api/projects/{name}/testplans/{plan_id}/slots/{slot_id}/retry")
+    def retry_slot(name: str, plan_id: str, slot_id: str) -> dict:
+        cfg = ws.config(name)
+        ps, label = _plan(cfg, plan_id)
+        old_case = {}
+
+        def reopen(slots):
+            for s in slots:
+                if s.id == slot_id:
+                    if s.status not in ("planned", "failed", "stale"):
+                        raise HTTPException(409, f"slot {slot_id} is {s.status}")
+                    old_case["id"] = s.case_id
+                    s.status, s.fail_reason, s.case_id = "planned", None, None
+                    return
+            raise HTTPException(404, f"no slot {slot_id}")
+        ps.update_slots(cfg.project, label, plan_id, reopen)
+        if old_case.get("id"):  # a stale case being regenerated: keep the old one, marked obsolete
+            c = next((c for c in ps.cases(cfg.project, label, plan_id) if c.id == old_case["id"]), None)
+            if c is not None:
+                ps.save_case(cfg.project, label, plan_id, c.model_copy(update={"status": "obsolete"}))
+        kind = ps.load_change_set(cfg.project, label, plan_id).kind
+        return _design_job(cfg, plan_id, label, "scenario" if kind == "scenario" else "more", {}, None, only={slot_id})
+
+    @app.post("/api/projects/{name}/testplans/{plan_id}/extras/{case_id}/{action}")
+    def extra_action(name: str, plan_id: str, case_id: str, action: str) -> dict:
+        from kb.testplan.models import CaseSlot
+
+        if action not in ("accept", "dismiss"):
+            raise HTTPException(404, "unknown action")
+        cfg = ws.config(name)
+        ps, label = _plan(cfg, plan_id)
+        c = next((c for c in ps.cases(cfg.project, label, plan_id) if c.id == case_id and c.suggested), None)
+        if c is None:
+            raise HTTPException(404, f"no suggested case {case_id}")
+        if action == "dismiss":
+            ps.save_case(cfg.project, label, plan_id, c.model_copy(update={"status": "dismissed"}))
+            return {"ok": True}
+        slot = CaseSlot(id=f"x-{case_id}", flow_id=c.flow_id, scenario_type="branches_edges", priority=c.priority,
+                        rule="suggested", status="written", case_id=case_id)
+        ps.update_slots(cfg.project, label, plan_id, lambda slots: slots.append(slot))
+        ps.save_case(cfg.project, label, plan_id, c.model_copy(update={"suggested": False, "status": "written", "slot_id": slot.id}))
+        return {"ok": True}
+
+    @app.get("/api/projects/{name}/testplans/{plan_id}/export.csv")
+    def export_testplan(name: str, plan_id: str, priority: list[str] | None = Query(None),
+                        flow: list[str] | None = Query(None), status: list[str] | None = Query(None)):
+        from fastapi.responses import Response
+
+        from kb.testplan.export import export_csv
+
+        cfg = ws.config(name)
+        ps, label = _plan(cfg, plan_id)
+        data = export_csv(ps, cfg.project, label, plan_id, priorities=priority, flow_ids=flow, statuses=status)
+        return Response(data, media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{cfg.project}-{plan_id}-test-cases.csv"'})
 
     @app.get("/api/jobs")
     def list_jobs(kind: str | None = None, active: int = 0) -> list[dict]:

@@ -112,14 +112,17 @@ def _cached_trace(ctx: _Ctx, flow_id: str, side: str, make) -> Flow:
     return f
 
 
-def plan_work(state: DesignState, ctx: _Ctx, counts: dict, cap: int | None) -> dict:
+def plan_work(state: DesignState, ctx: _Ctx, counts: dict, cap: int | None, only: set[str] | None = None) -> dict:
     cs = ctx.ps.load_change_set(ctx.cfg.project, ctx.label, ctx.pid)
     impact = ctx.ps.load_impact(ctx.cfg.project, ctx.label, ctx.pid)
     if impact is None:
         raise KbError("this test plan has no impact yet: find what changed first")
     statuses = ("planned", "failed") if ctx.mode == "more" else ("planned",)
     slots = ctx.ps.load_slots(ctx.cfg.project, ctx.label, ctx.pid)
-    chosen = select(slots, impact.flows, counts, cap, statuses)
+    if only:
+        chosen = [s for s in slots if s.id in only and s.status in ("planned", "failed", "stale")]
+    else:
+        chosen = select(slots, impact.flows, counts, cap, statuses)
     if not chosen:
         return {"work_ids": []}
     ids = {s.id for s in chosen}
@@ -243,12 +246,12 @@ def coverage_node(state: DesignState, ctx: _Ctx) -> dict:
 
 
 def run_design(cfg, plan_id: str, label: str, store, provider, tracer, mode: Mode, counts: dict[str, int],
-               per_flow_cap: int | None, progress=None, author: str = "unknown") -> DesignResult:
+               per_flow_cap: int | None, progress=None, author: str = "unknown", only: set[str] | None = None) -> DesignResult:
     ctx = _Ctx(cfg=cfg, store=store, ps=PlanStore(store), pid=plan_id, label=label, mode=mode, provider=provider,
                tracer=tracer, author=author, report=progress or (lambda text, frac: None))
     provider.check()
     g = StateGraph(DesignState)
-    g.add_node("plan_work", lambda s: plan_work(s, ctx, counts, per_flow_cap))
+    g.add_node("plan_work", lambda s: plan_work(s, ctx, counts, per_flow_cap, only))
     g.add_node("flow", lambda s: flow_node(s, ctx))
     g.add_node("merge", lambda s: merge(s, ctx))
     g.add_node("coverage", lambda s: coverage_node(s, ctx))
