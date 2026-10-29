@@ -128,3 +128,32 @@ def test_reader_blocks_writer_on_same_branch(serve):
         assert r.status_code == 200  # readers share
     finally:
         gate.set()
+
+
+def test_ask_runs_while_two_analyses_block():
+    r = JobRunner(max_workers=2)
+    gate = threading.Event()
+    a1 = r.submit("analyze", lambda rep: gate.wait(10))
+    a2 = r.submit("analyze", lambda rep: gate.wait(10))
+    q = r.submit("ask", lambda rep: 1)
+    try:
+        wait(r, q.id, timeout=5)
+        assert r.get(q.id).state == "done"
+        assert r.get(a1.id).state == "running" and r.get(a2.id).state == "running"
+    finally:
+        gate.set()
+
+
+def test_queued_job_reports_position():
+    r = JobRunner(max_workers=2)
+    gate = threading.Event()
+    r.submit("analyze", lambda rep: gate.wait(10))
+    r.submit("push", lambda rep: gate.wait(10))
+    third = r.submit("pull", lambda rep: None)
+    try:
+        import time as _t
+        _t.sleep(0.2)
+        d = r.get(third.id).to_dict()
+        assert d["state"] == "queued" and d["queue_position"] == 1
+    finally:
+        gate.set()

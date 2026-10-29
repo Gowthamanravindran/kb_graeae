@@ -123,3 +123,9 @@ test("opening a saved answer shows it without asking", async () => {
   expect(screen.getByText("Shared")).toBeInTheDocument();
   expect(api.ask).not.toHaveBeenCalled();
 });
+
+test("queued question shows its place in line", async () => {
+  const api = fakeApi({ job: vi.fn(async (id: string) => ({ ...job(id, "queued", null, ""), queue_position: 2 })) });
+  renderApp(<Ask />, api, { project: "sop", branch: "main", view: "ask", askSeed: { question: "q", jobId: "j1" } });
+  expect(await screen.findByText("Queued behind other questions (position 2)")).toBeInTheDocument();
+});

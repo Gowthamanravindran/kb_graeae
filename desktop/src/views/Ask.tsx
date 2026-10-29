@@ -26,7 +26,7 @@ function Running({ jobId, onDone, onFail }: { jobId: string; onDone(p: AskPayloa
   }, [done, failed]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <Card className="flex flex-col gap-3 p-5" aria-busy="true">
-      <div className="text-sm font-semibold text-accent">{job?.step || "Starting…"}</div>
+      <div className="text-sm font-semibold text-accent">{job?.state === "queued" && job.queue_position ? `Queued behind other questions (position ${job.queue_position})` : job?.step || "Starting…"}</div>
       <div className="h-3 w-3/4 animate-pulse rounded bg-bg" />
       <div className="h-3 w-2/3 animate-pulse rounded bg-bg" />
       <div className="h-24 animate-pulse rounded bg-bg" />

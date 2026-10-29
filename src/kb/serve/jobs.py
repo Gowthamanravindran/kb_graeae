@@ -18,6 +18,7 @@ from fastapi import HTTPException
 from kb.errors import KbError, LLMUnavailable
 
 ACTIVE = ("queued", "running")
+ASK_KIND = "ask"
 
 
 @dataclass
@@ -35,8 +36,11 @@ class Job:
     exclusive: bool = False
 
     def to_dict(self) -> dict:
-        return {k: getattr(self, k) for k in ("id", "kind", "key", "state", "step", "progress", "result", "error",
-                                              "created_at")}
+        d = {k: getattr(self, k) for k in ("id", "kind", "key", "state", "step", "progress", "result", "error",
+                                           "created_at")}
+        runner = getattr(self, "runner", None)
+        d["queue_position"] = runner.queue_position(self) if runner else None
+        return d
 
 
 def branch_scope(project: str, branch: str) -> str:
@@ -72,8 +76,10 @@ def error_message(exc: BaseException) -> str:
 
 
 class JobRunner:
-    def __init__(self, max_workers: int = 2, log_dir: Path | None = None) -> None:
+    def __init__(self, max_workers: int = 2, log_dir: Path | None = None, ask_workers: int = 2) -> None:
+        # Questions get their own pool so an hour-long analysis never makes a question wait.
         self.pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="kb-job")
+        self.ask_pool = ThreadPoolExecutor(max_workers=ask_workers, thread_name_prefix="kb-ask")
         self.jobs: dict[str, Job] = {}
         self.lock = threading.Lock()
         self.log = logging.getLogger("kb.serve")
@@ -96,9 +102,18 @@ class JobRunner:
                 self._check_scope(scope, exclusive)
             job = Job(id=uuid.uuid4().hex[:12], kind=kind, key=key)
             job.scope, job.exclusive = scope, exclusive
+            job.runner = self
             self.jobs[job.id] = job
-        self.pool.submit(self._run, job, fn)
+        (self.ask_pool if kind == ASK_KIND else self.pool).submit(self._run, job, fn)
         return job
+
+    def queue_position(self, job: "Job") -> int | None:
+        """1-based place in line among queued jobs of the same pool, or None once running."""
+        if job.state != "queued":
+            return None
+        same = lambda j: (j.kind == ASK_KIND) == (job.kind == ASK_KIND)  # noqa: E731
+        ahead = [j for j in list(self.jobs.values()) if j.state == "queued" and same(j) and j.created_at < job.created_at]
+        return len(ahead) + 1
 
     def _run(self, job: Job, fn: Callable[[Reporter], Any]) -> None:
         job.state = "running"
