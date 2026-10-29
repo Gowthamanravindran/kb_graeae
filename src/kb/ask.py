@@ -11,14 +11,15 @@ from kb.packs.store import PackStore
 
 
 def available_checkouts(cfg: ProjectConfig, branch: str, store: PackStore,
-                        commits: dict[str, str]) -> tuple[dict[str, Checkout], list[str]]:
+                        commits: dict[str, str], branches: dict[str, str] | None = None) -> tuple[dict[str, Checkout], list[str]]:
     """Source for each repo at the pack's commits (url repos) or as it is now (local folders).
     Repos without source are skipped with a warning and answered from the map only."""
     work = store.kb_home / "work" / f"{cfg.project}@{branch.replace('/', '__')}" / "repos"
     out, warnings = {}, []
     for r in cfg.repos:
         try:
-            out[r.name] = checkout_at(r, branch, commits.get(r.name, branch), work)
+            br = (branches or {}).get(r.name, branch)
+            out[r.name] = checkout_at(r, br, commits.get(r.name, br), work)
         except KbError as e:
             warnings.append(f"no source for {r.name}: {e}")
     return out, warnings
@@ -29,7 +30,7 @@ def run_ask(cfg: ProjectConfig, branch: str, question: str, store: PackStore, pr
     pack = store.load(cfg.project, branch)
     if from_qa and not any(q.id == from_qa for q in pack.qa):
         raise KbError(f"No saved answer with id '{from_qa}' in {cfg.project}@{branch}. See `kb memory list`.")
-    checkouts, warnings = available_checkouts(cfg, branch, store, pack.manifest.commits)
+    checkouts, warnings = available_checkouts(cfg, branch, store, pack.manifest.commits, pack.manifest.branches)
     for name, co in checkouts.items():
         analysed = pack.manifest.commits.get(name)
         if analysed and analysed != co.commit:

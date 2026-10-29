@@ -1,0 +1,26 @@
+appId: ai.kb.desktop
+productName: KB Desktop
+directories:
+  output: release
+asar: true
+publish: null # no auto-update feed yet
+files:
+  - dist-electron/**
+  - package.json
+extraResources:
+  # The PyInstaller engine (bash packaging/build-sidecar.sh) and the built renderer it serves.
+  - from: ../dist/kb-serve
+    to: kb-serve
+  - from: dist
+    to: ui
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  category: public.app-category.developer-tools
+  identity: null # unsigned for now; see docs/desktop.md for first-launch steps
+win:
+  target: nsis
+linux:
+  target: AppImage
+  category: Development

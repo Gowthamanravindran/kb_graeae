@@ -114,3 +114,39 @@ def test_sop_example_loads():
     cfg = load_config(Path(__file__).parent.parent / "examples" / "sop.kb.yaml")
     assert [r.name for r in cfg.repos] == ["sop-web", "sop-backend"]
     assert cfg.linkers[0].options["backend_style"] == "graphql-compose"
+
+
+def test_registry_must_be_http_url(tmp_path):
+    p = tmp_path / "kb.yaml"
+    p.write_text(SPEC_EXAMPLE.replace("registry: https://kb.acme.internal", "registry: kb.acme.internal"))
+    with pytest.raises(ConfigError, match="registry"):
+        load_config(p)
+    p.write_text(SPEC_EXAMPLE.replace("https://kb.acme.internal", "https://kb.acme.internal/"))
+    assert load_config(p).registry == "https://kb.acme.internal"
+
+
+def _two_repo_cfg(tmp_path):
+    p = tmp_path / "kb.yaml"
+    p.write_text(f"""
+project: sop
+repos:
+  - {{name: sop-web, role: frontend, local_path: {tmp_path}, default_branch: master}}
+  - {{name: sop-backend, role: backend, local_path: {tmp_path}}}
+""")
+    return load_config(p)
+
+
+def test_resolve_branch_set_single_and_per_repo(tmp_path):
+    from kb.config import resolve_branch_set
+
+    cfg = _two_repo_cfg(tmp_path)
+    assert cfg.repos[0].default_branch == "master"
+    assert resolve_branch_set(cfg, ["main"]) == ("main", {"sop-web": "main", "sop-backend": "main"})
+    assert resolve_branch_set(cfg, ["sop-web=master", "sop-backend=develop"], label="production") == (
+        "production", {"sop-web": "master", "sop-backend": "develop"})
+    with pytest.raises(ConfigError, match="give --label"):
+        resolve_branch_set(cfg, ["sop-web=master", "sop-backend=develop"])
+    with pytest.raises(ConfigError, match="unknown repo 'nope'"):
+        resolve_branch_set(cfg, ["nope=x"], label="l")
+    with pytest.raises(ConfigError, match="no branch for sop-backend"):
+        resolve_branch_set(cfg, ["sop-web=master"], label="l")

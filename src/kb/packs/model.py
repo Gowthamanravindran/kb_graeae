@@ -10,6 +10,13 @@ from pydantic import BaseModel, Field
 Visibility = Literal["private", "published"]
 
 
+def commits_key(commits: dict[str, str]) -> str:
+    """Identity of a set of repo commits (same value on client and registry)."""
+    import hashlib
+
+    return hashlib.sha256(repr(sorted(commits.items())).encode()).hexdigest()[:12]
+
+
 class Manifest(BaseModel):
     project: str
     branch: str
@@ -21,6 +28,8 @@ class Manifest(BaseModel):
     status: Literal["incomplete", "complete"]
     stats: dict[str, int] = Field(default_factory=dict)
     failed_modules: list[str] = Field(default_factory=list)
+    synced: bool = False  # True once this base came from / went to a registry
+    branches: dict[str, str] = Field(default_factory=dict)  # repo -> branch (a branch set; empty = `branch` everywhere)
 
 
 class Module(BaseModel):

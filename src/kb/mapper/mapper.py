@@ -57,12 +57,14 @@ def _prompt(c: Cluster, g: CodeGraph, glossary: str) -> str:
 
 
 def map_modules(clusters: list[Cluster], g: CodeGraph, context_text: str, provider: LLMProvider, tracer,
-                checkpoint_dir: Path, resume: bool) -> tuple[list[Module], list[str]]:
+                checkpoint_dir: Path, resume: bool, on_module=None) -> tuple[list[Module], list[str]]:
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     modules: list[Module] = []
     failed: list[str] = []
-    for c in clusters:
+    for i, c in enumerate(clusters, 1):
+        if on_module is not None:
+            on_module(i, len(clusters))
         ck = checkpoint_dir / f"{c.id}.json"
         d = None
         if resume and ck.exists():

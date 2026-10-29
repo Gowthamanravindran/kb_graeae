@@ -15,11 +15,14 @@ Mapping: CodeNode.id = "<repo>:<file>" for files, "<repo>:<file>#<name>" for sym
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 
 from kb.errors import KbError
@@ -30,14 +33,26 @@ from kb.ingest.checkout import Checkout
 _LINE = re.compile(r"L(\d+)")
 
 
+def graphify_command() -> list[str]:
+    """How to run Graphify: override, the packaged engine itself, the CLI on PATH, or the installed module."""
+    if os.environ.get("KB_GRAPHIFY_CMD"):
+        return shlex.split(os.environ["KB_GRAPHIFY_CMD"])
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--run-graphify"]
+    if shutil.which("graphify"):
+        return ["graphify"]
+    if importlib.util.find_spec("graphify") is not None:
+        return [sys.executable, "-m", "graphify"]
+    raise KbError("graphify not found: uv tool install graphifyy")
+
+
 def run_graphify(checkout: Checkout, out_dir: Path, ignore: list[str]) -> Path:
     """Extract into out_dir (never into the repo). `ignore` is applied when parsing."""
-    if shutil.which("graphify") is None:
-        raise KbError("graphify not found: uv tool install graphifyy")
+    cmd = graphify_command()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "GRAPHIFY_BACKEND": "none"}
-    args = ["graphify", "extract", ".", "--code-only", "--no-cluster", "--out", str(out_dir)]
+    args = [*cmd, "extract", ".", "--code-only", "--no-cluster", "--out", str(out_dir)]
     r = subprocess.run(args, cwd=checkout.root, env=env, capture_output=True, text=True)
     if r.returncode != 0:
         raise KbError(f"graphify failed on {checkout.repo}: {(r.stderr or r.stdout).strip()[-500:]}")

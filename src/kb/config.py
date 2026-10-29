@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from kb.errors import ConfigError
 
@@ -17,6 +17,7 @@ class RepoConfig(BaseModel):
     url: str | None = None
     local_path: Path | None = None
     path: str | None = None
+    default_branch: str | None = None
 
     @model_validator(mode="after")
     def _one_source(self) -> "RepoConfig":
@@ -43,6 +44,18 @@ class ProjectConfig(BaseModel):
     ignore: list[str] = Field(default_factory=list)
     registry: str | None = None
     langfuse: str | None = None
+
+    @field_validator("registry")
+    @classmethod
+    def _registry_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        from urllib.parse import urlparse
+
+        u = urlparse(v.strip())
+        if u.scheme not in ("http", "https") or not u.netloc:
+            raise ValueError(f"registry must be an http(s) URL like https://kb.example.com, got '{v}'")
+        return v.strip().rstrip("/")
 
     @model_validator(mode="after")
     def _references(self) -> "ProjectConfig":
@@ -83,3 +96,33 @@ def load_config(path: Path) -> ProjectConfig:
         if r.local_path is not None and not r.local_path.is_absolute():
             r.local_path = (path.parent / r.local_path).resolve()
     return cfg
+
+
+BranchSet = dict[str, str]
+
+
+def resolve_branch_set(cfg: "ProjectConfig", branch_args: list[str], label: str | None = None) -> tuple[str, BranchSet]:
+    """`--branch main` → the same name in every repo (label "main"). `--branch web=master --branch be=develop`
+    → a branch per repo (a repo left out uses its default_branch) stored under `label`."""
+    names = [r.name for r in cfg.repos]
+    plain = [a for a in branch_args if "=" not in a]
+    pairs = [a.split("=", 1) for a in branch_args if "=" in a]
+    if plain and not pairs and len(plain) == 1:
+        return label or plain[0], {n: plain[0] for n in names}
+    if plain:
+        raise ConfigError("use either one --branch NAME or --branch repo=branch for each repo, not both")
+    chosen: BranchSet = {}
+    for repo, br in pairs:
+        if repo not in names:
+            raise ConfigError(f"unknown repo '{repo}' (repos: {', '.join(names)})")
+        chosen[repo] = br.strip()
+    for r in cfg.repos:
+        if r.name not in chosen:
+            if not r.default_branch:
+                raise ConfigError(f"no branch for {r.name}: add --branch {r.name}=BRANCH or default_branch in kb.yaml")
+            chosen[r.name] = r.default_branch
+    if len(set(chosen.values())) == 1 and not label:
+        return next(iter(chosen.values())), chosen
+    if not label:
+        raise ConfigError("give --label for different branches per repo (for example --label production)")
+    return label, chosen

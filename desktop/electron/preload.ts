@@ -1,0 +1,20 @@
+import { contextBridge, ipcRenderer } from "electron";
+
+// The engine secret is added by the main process to every request; the page never sees it.
+contextBridge.exposeInMainWorld("kb", {
+  baseUrl: "",
+  token: "",
+  openExternal: (url: string) => ipcRenderer.invoke("kb:open-external", url),
+  openCitation: (c: { project: string; branch: string; repo: string; file: string; line: number }) => ipcRenderer.invoke("kb:open-citation", c),
+  pickFile: (filters?: { name: string; extensions: string[] }[]) => ipcRenderer.invoke("kb:pick-file", filters ?? []),
+  saveFile: (defaultName: string, data: Uint8Array) => ipcRenderer.invoke("kb:save-file", defaultName, data),
+  revealConfig: (project: string) => ipcRenderer.invoke("kb:reveal-config", project),
+  engineStatus: () => ipcRenderer.invoke("kb:engine-status"),
+  retryEngine: () => ipcRenderer.invoke("kb:retry-engine"),
+  openLogs: () => ipcRenderer.invoke("kb:open-logs"),
+  onEngineStopped: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on("kb:engine-stopped", listener);
+    return () => ipcRenderer.removeListener("kb:engine-stopped", listener);
+  },
+});

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,11 +39,41 @@ def default_kb_home() -> Path:
     return Path(os.environ.get("KB_HOME", Path.home() / ".kb"))
 
 
+_overlay_locks: dict[Path, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def _overlay_lock(path: Path) -> threading.Lock:
+    """One in-process lock per overlay file, for read-modify-write (kb serve runs jobs in threads)."""
+    key = Path(path).resolve()
+    with _locks_guard:
+        return _overlay_locks.setdefault(key, threading.Lock())
+
+
 def _write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(data, indent=1, default=str))
     tmp.replace(path)
+
+
+def check_unsafe_paths(pack_dir: Path, paths) -> None:
+    """Raise KbError unless every path is an allowed pack base path that stays inside pack_dir/base."""
+    from kb_registry.paths import is_allowed_path
+
+    base = (Path(pack_dir) / "base").resolve()
+    for rel in paths:
+        target = (Path(pack_dir) / rel).resolve()
+        if rel == "manifest.json" or not is_allowed_path(rel) or not target.is_relative_to(base):
+            raise KbError(f"unsafe path from registry: {rel!r}")
+
+
+def _overlay_file(pack_dir: Path, sub: str, item_id: str) -> Path:
+    from kb_registry.paths import is_safe_id
+
+    if not is_safe_id(item_id):
+        raise KbError(f"unsafe overlay id: {item_id!r}")
+    return Path(pack_dir) / "overlay" / sub / f"{item_id}.json"
 
 
 class PackStore:
@@ -51,6 +82,21 @@ class PackStore:
 
     def pack_dir(self, project: str, branch: str) -> Path:
         return self.kb_home / "packs" / f"{project}@{branch.replace('/', '__')}"
+
+    def find_pack_by_branches(self, project: str, branches: dict[str, str]) -> str | None:
+        """Label of the newest pack of `project` analysed with exactly this branch per repo."""
+        best = None
+        for d in (self.kb_home / "packs").glob(f"{project}@*"):
+            mf = d / "manifest.json"
+            if not mf.exists():
+                continue
+            m = Manifest.model_validate_json(mf.read_text())
+            if m.project != project:
+                continue
+            have = m.branches or {repo: m.branch for repo in m.commits}
+            if have == branches and (best is None or m.created_at > best.created_at):
+                best = m
+        return best.branch if best else None
 
     def exists(self, project: str, branch: str) -> bool:
         return (self.pack_dir(project, branch) / "manifest.json").exists()
@@ -70,6 +116,30 @@ class PackStore:
         })
         _write_json(base / "modules.json", [m.model_dump() for m in modules])
         (base / "system.md").write_text(system_md)
+        for sub in ("qa", "flows", "module_notes"):
+            (d / "overlay" / sub).mkdir(parents=True, exist_ok=True)
+        _write_json(d / "manifest.json", manifest.model_dump(mode="json"))
+        return d
+
+    def write_pulled_base(self, project: str, branch: str, manifest: Manifest, files: dict[str, bytes]) -> Path:
+        """Replace base/ with files from the registry; overlay/ is kept. Every path is checked first."""
+        from kb_registry.paths import is_allowed_path
+
+        d = self.pack_dir(project, branch)
+        check_unsafe_paths(d, files)
+        tmp, old = d / "base.tmp", d / "base.old"
+        for x in (tmp, old):
+            if x.exists():
+                shutil.rmtree(x)
+        for rel, data in files.items():
+            target = tmp / rel.removeprefix("base/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        if (d / "base").exists():
+            (d / "base").rename(old)
+        tmp.rename(d / "base")
+        if old.exists():
+            shutil.rmtree(old)
         for sub in ("qa", "flows", "module_notes"):
             (d / "overlay" / sub).mkdir(parents=True, exist_ok=True)
         _write_json(d / "manifest.json", manifest.model_dump(mode="json"))
@@ -115,17 +185,18 @@ class PackStore:
         )
 
     def save_flow(self, project: str, branch: str, flow: Flow) -> None:
-        _write_json(self.pack_dir(project, branch) / "overlay" / "flows" / f"{flow.id}.json", flow.model_dump(mode="json"))
+        _write_json(_overlay_file(self.pack_dir(project, branch), "flows", flow.id), flow.model_dump(mode="json"))
 
     def save_qa(self, project: str, branch: str, qa: QAItem) -> None:
-        _write_json(self.pack_dir(project, branch) / "overlay" / "qa" / f"{qa.id}.json", qa.model_dump(mode="json"))
+        _write_json(_overlay_file(self.pack_dir(project, branch), "qa", qa.id), qa.model_dump(mode="json"))
 
     def add_suggestions(self, project: str, branch: str, items: list[Suggestion]) -> None:
         p = self.pack_dir(project, branch) / "overlay" / "suggestions.json"
-        existing = json.loads(p.read_text()) if p.exists() else []
-        seen = {s["question"].lower() for s in existing}
-        existing += [s.model_dump() for s in items if s.question.lower() not in seen]
-        _write_json(p, existing)
+        with _overlay_lock(p):
+            existing = json.loads(p.read_text()) if p.exists() else []
+            seen = {s["question"].lower() for s in existing}
+            existing += [s.model_dump() for s in items if s.question.lower() not in seen]
+            _write_json(p, existing)
 
     def save_module_note(self, project: str, branch: str, module_id: str, text: str) -> None:
-        _write_json(self.pack_dir(project, branch) / "overlay" / "module_notes" / f"{module_id}.json", {"text": text})
+        _write_json(_overlay_file(self.pack_dir(project, branch), "module_notes", module_id), {"text": text})

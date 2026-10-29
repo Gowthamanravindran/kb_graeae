@@ -29,7 +29,6 @@ from kb.packs.staleness import hash_span, is_stale
 
 MAX_DEPTH = 4
 MAX_NODES = 40
-REUSE_SCORE = 0.8
 REUSE_OVERLAP = 0.6
 KIND_ORDER = ["route", "component", "graphql_op", "resolver", "queue_topic"]
 
@@ -78,6 +77,30 @@ def _overlap(a: str, b: str) -> float:
     return len(ta & tb) / len(ta | tb) if ta | tb else 0.0
 
 
+def _reusable_flow(q: str, module_ids: list[str], deps) -> str | None:
+    """A saved, still-fresh flow that answers the same question. Retrieval searches saved flows and
+    answers only (a module summary may outrank them on the whole index); the decision is question
+    overlap, a shared module and freshness, not relative search score."""
+    pack = deps.pack
+    by_id = {f.id: f for f in pack.flows}
+    qa_flow = {x.id: x.flow_id for x in pack.qa}
+    candidates: list[str] = []
+    for h in search(deps.pack_dir, q, limit=20, kinds={"flow", "qa"}):
+        fid = h.ref if h.kind == "flow" else qa_flow.get(h.ref)
+        if fid and fid in by_id and fid not in candidates:
+            candidates.append(fid)
+    for fid in candidates:
+        flow = by_id[fid]
+        if module_ids and not set(flow.module_ids) & set(module_ids):
+            continue
+        if _overlap(flow.question, q) < REUSE_OVERLAP:
+            continue
+        if any(s.citation and is_stale(s.citation, deps.checkouts) for s in flow.steps):
+            continue
+        return fid
+    return None
+
+
 def understand(state: AgentState, deps) -> dict:
     q = state["question"]
     pack = deps.pack
@@ -101,20 +124,8 @@ def understand(state: AgentState, deps) -> dict:
         out["not_found"] = True
         return out
 
-    if not seed and not state.get("no_reuse") and hits:
-        best = hits[0].score
-        for h in hits:
-            if h.kind != "flow" or h.score < REUSE_SCORE * best:
-                continue
-            flow = next((f for f in pack.flows if f.id == h.ref), None)
-            if flow is None or not set(flow.module_ids) & set(module_ids):
-                continue
-            if _overlap(flow.question, q) < REUSE_OVERLAP:
-                continue
-            if any(s.citation and is_stale(s.citation, deps.checkouts) for s in flow.steps):
-                continue
-            out["reused_flow_id"] = flow.id
-            break
+    if not seed and not state.get("no_reuse"):
+        out["reused_flow_id"] = _reusable_flow(q, module_ids, deps)
     return out
 
 
@@ -205,6 +216,8 @@ def trace(state: AgentState, deps) -> dict:
             parts.append(f"This is a follow-up to an earlier answer.\nEarlier question: {qa.question}\nEarlier answer: {qa.answer}")
     if deps.context:
         parts.append("Glossary:\n" + deps.context[:6000])
+    if deps.extra.get("trace_context"):  # set by test planning: the PR's changed code and decision points
+        parts.append(deps.extra["trace_context"])
     parts.append("Return 3-12 steps in the order they happen, UI steps first. Every step must cite the repo, "
                  "the file path relative to that repo's root, and the line range you read. "
                  "For the step where the app sends a request to the server, cite the operation's definition "

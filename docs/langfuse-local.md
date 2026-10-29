@@ -16,16 +16,26 @@ Open http://localhost:3000, sign up (local account), create an organisation and 
 
 ## 2. Point kb at it
 
+In the desktop app, open **Settings** and enter the public key, secret key and host, then click **Save** and **Test connection**. Settings writes the same file the CLI reads.
+
+Without the app, edit the file directly:
+
+Put the keys in **`~/.kb/kb.env`** (or `$KB_HOME/kb.env`). The CLI and the desktop app both read it,
+including when the app is opened from Finder:
+
 ```bash
-export LANGFUSE_PUBLIC_KEY=pk-lf-...
-export LANGFUSE_SECRET_KEY=sk-lf-...
+mkdir -p ~/.kb && cat > ~/.kb/kb.env <<'ENV'
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=http://localhost:3000
+ENV
+chmod 600 ~/.kb/kb.env
 ```
 
-and in `kb.yaml`:
-
-```yaml
-langfuse: http://localhost:3000
-```
+Restart the app after editing the file. Variables already set in your shell win over the file.
+A `langfuse:` URL in a project's `kb.yaml` overrides `LANGFUSE_HOST` for that project.
+Already running Langfuse for something else? Create a separate project in it (for example `graeae`) and use that
+project's keys; one Langfuse server holds many projects.
 
 ## 3. What you will see
 

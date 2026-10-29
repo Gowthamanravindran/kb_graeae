@@ -222,3 +222,28 @@ def test_trace_prompt_asks_to_cite_graphql_operation_for_requests(tmp_path):
                 make_deps(store, cos, p))
     pr = p.requests[0].prompt
     assert "graphql_op" in pr and "cite the operation's definition" in pr
+
+
+def test_reuse_when_module_summary_outranks_the_saved_flow(tmp_path):
+    store, cos = build_pack(tmp_path)
+    from kb.packs.index import build_index
+
+    q = "How do admins schedule repeating tasks on the server queue?"
+    save_flow(store, cos, question=q)
+    flow = store.load("mini", "main").flows[0]
+    filler = [FlowStep(side="backend", text=f"Step {i} updates records, sends notifications and writes audit logs",
+                       verified=True) for i in range(12)]
+    store.save_flow("mini", "main", flow.model_copy(update={"steps": flow.steps + filler}))
+    build_index(store.pack_dir("mini", "main"), store.load("mini", "main"))
+    out = nodes.understand({"question": q}, make_deps(store, cos, FakeProvider()))
+    assert out["reused_flow_id"] == "f1"
+
+
+def test_trace_includes_extra_context(tmp_path):
+    store, cos = build_pack(tmp_path)
+    p = FakeProvider([trace_reply(GOOD_STEPS)])
+    d = make_deps(store, cos, p)
+    d.extra["trace_context"] = "CHANGED CODE\n+ if (!context.user.isAdmin) {"
+    nodes.trace({"question": "How does: Admin creates a task", "module_ids": ["tasks"], "shortlist": []}, d)
+    prompt = p.requests[0].prompt
+    assert "CHANGED CODE" in prompt and prompt.index("CHANGED CODE") < prompt.index("Return 3-12 steps")

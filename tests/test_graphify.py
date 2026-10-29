@@ -71,5 +71,6 @@ def test_run_graphify_uses_no_llm_and_out_dir(tmp_path, monkeypatch):
 
 def test_missing_graphify_binary(tmp_path, monkeypatch):
     monkeypatch.setattr("kb.ingest.graphify.shutil.which", lambda _: None)
+    monkeypatch.setattr("kb.ingest.graphify.importlib.util.find_spec", lambda _: None)
     with pytest.raises(KbError, match="uv tool install graphifyy"):
         run_graphify(Checkout("mini-be", ROOT, "x"), tmp_path, [])
