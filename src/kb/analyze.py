@@ -8,6 +8,7 @@ checkpoints for the same commits.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -48,6 +49,51 @@ def context_text(cfg: ProjectConfig, checkouts: dict[str, Checkout]) -> str:
     return "\n\n".join(parts)
 
 
+@dataclass
+class GraphBuild:
+    graphs: dict[str, CodeGraph]
+    merged: CodeGraph
+    links: list[CodeEdge]
+    link_nodes: list
+    n_files: int = 0
+    unparsed: int = 0
+
+
+def build_graph(cfg: ProjectConfig, checkouts: dict[str, Checkout], work: Path, tracer=None, on_link=None) -> GraphBuild:
+    """Steps 2-3 of analysis (no LLM): Graphify per repo, then the linkers across repos."""
+    from kb.tracing import NoopTracer
+
+    tracer = tracer or NoopTracer()
+    with tracer.span("graph") as sp:
+        graphs: dict[str, CodeGraph] = {}
+        unparsed = 0
+        for name, co in checkouts.items():
+            out = run_graphify(co, Path(work) / "graphify" / name, cfg.ignore)
+            graphs[name] = parse_graphify_json(out, name, co.root, cfg.ignore)
+            files = {n.file for n in graphs[name].nodes(kind="file")}
+            unparsed += sum(1 for p in ts.iter_source_files(co.root, cfg.ignore)
+                            if p.relative_to(co.root).as_posix() not in files)
+        merged = CodeGraph()
+        for g in graphs.values():
+            merged.merge(g)
+        n_files = sum(len(g.nodes(kind="file")) for g in graphs.values())
+        sp.end(output={"files": n_files, "nodes": len(merged.nodes()), "unparsed": unparsed})
+    if on_link:
+        on_link()
+    with tracer.span("link") as sp:
+        repo_ids = {n.id for g in graphs.values() for n in g.nodes()}
+        links: list[CodeEdge] = []
+        for lk in cfg.linkers:
+            edges = get_linker(lk.type).run(LinkContext(merged, checkouts, lk, tuple(cfg.ignore)))
+            for e in edges:
+                merged.add_edge(e)
+            links += edges
+        link_nodes = [n for n in merged.nodes() if n.id not in repo_ids]
+        resolved = sum(1 for e in links if e.resolved)
+        sp.end(output={"links_resolved": resolved, "links_unresolved": len(links) - resolved})
+    return GraphBuild(graphs, merged, links, link_nodes, n_files, unparsed)
+
+
 def _commits_key(commits: dict[str, str]) -> str:
     return commits_key(commits)
 
@@ -67,33 +113,10 @@ def run_analyze(cfg: ProjectConfig, branch: str, store: PackStore, provider: LLM
             sp.end(output=commits)
 
         report("Building the code graph", 0.1)
-        with tracer.span("graph") as sp:
-            graphs: dict[str, CodeGraph] = {}
-            unparsed = 0
-            for name, co in checkouts.items():
-                out = run_graphify(co, work / "graphify" / name, cfg.ignore)
-                graphs[name] = parse_graphify_json(out, name, co.root, cfg.ignore)
-                files = {n.file for n in graphs[name].nodes(kind="file")}
-                unparsed += sum(1 for p in ts.iter_source_files(co.root, cfg.ignore)
-                                if p.relative_to(co.root).as_posix() not in files)
-            merged = CodeGraph()
-            for g in graphs.values():
-                merged.merge(g)
-            n_files = sum(len(g.nodes(kind="file")) for g in graphs.values())
-            sp.end(output={"files": n_files, "nodes": len(merged.nodes()), "unparsed": unparsed})
-
-        report("Linking frontend and backend", 0.3)
-        with tracer.span("link") as sp:
-            repo_ids = {n.id for g in graphs.values() for n in g.nodes()}
-            links: list[CodeEdge] = []
-            for lk in cfg.linkers:
-                edges = get_linker(lk.type).run(LinkContext(merged, checkouts, lk, tuple(cfg.ignore)))
-                for e in edges:
-                    merged.add_edge(e)
-                links += edges
-            link_nodes = [n for n in merged.nodes() if n.id not in repo_ids]
-            resolved = sum(1 for e in links if e.resolved)
-            sp.end(output={"links_resolved": resolved, "links_unresolved": len(links) - resolved})
+        gb = build_graph(cfg, checkouts, work, tracer, on_link=lambda: report("Linking frontend and backend", 0.3))
+        graphs, merged, links, link_nodes = gb.graphs, gb.merged, gb.links, gb.link_nodes
+        n_files, unparsed = gb.n_files, gb.unparsed
+        resolved = sum(1 for e in links if e.resolved)
 
         stats = {"files": n_files, "unparsed": unparsed, "nodes": len(merged.nodes()),
                  "links_resolved": resolved, "links_unresolved": len(links) - resolved, "modules": 0}
