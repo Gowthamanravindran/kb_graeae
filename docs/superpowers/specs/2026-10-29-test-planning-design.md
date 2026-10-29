@@ -125,7 +125,7 @@ The input is a `ScenarioRequest`: scenario text, or an answer id, and the branch
 
 ## 4. Data model
 
-Stored in the pack overlay of the **head** branch (`testplans/<change_set_id>/…` JSON), and published to the registry as overlay items of new kinds.
+Stored in the overlay of the **base analysis** (`overlay/testplans/<change_set_id>/…` JSON; a PR branch has no analysis of its own), or of the analysed branch for a scenario plan, and published to the registry as overlay items of new kinds.
 
 - **ChangeSet** — `id`, `project`, `base {repo: {branch, commit}}`, `head {repo: {branch, commit}}` (head = base for an untouched repo), `base_pack` (label of the matching analysis), `prs {repo: {url, title, body, issues}}`, `created_by`, `created_at`.
 - **ImpactReport** — one per head commit set. Fields:
