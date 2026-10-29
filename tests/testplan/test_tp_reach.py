@@ -56,3 +56,20 @@ def test_structural_items_route_added():
     head.add_node(CodeNode(id="w:route:/new", repo="w", kind="route", name="/new", file="src/routes.ts", line=3))
     items = structural_items(GraphDelta(nodes_added=["w:route:/new"]), CodeGraph(), head)
     assert [(i.kind, i.change) for i in items] == [("route", "added")]
+
+
+def test_reach_scans_edges_a_bounded_number_of_times(tmp_path, monkeypatch):
+    fx = make_pr_fixture(tmp_path)
+    cfg = load_config(fx.cfg_path)
+    work = tmp_path / "work"
+    base = {n: worktree_at(cfg.repo(n), b, work) for n, b in fx.base.items()}
+    head = {n: worktree_at(cfg.repo(n), b, work) for n, b in fx.head.items()}
+    hunks = repo_diff(fx.be, "mini-be", "develop", fx.head_branch, [])
+    bg, hg = build_graph(cfg, base, work / "b").merged, head_graph(cfg, head, work)
+    d = graph_delta(bg, hg, hunks, base, head)
+    inv = inventory(base, head, d, hunks)
+    calls = []
+    real = hg.edges
+    monkeypatch.setattr(hg, "edges", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+    reach(hg, bg, None, d, inv)
+    assert len(calls) <= 2

@@ -248,9 +248,11 @@ def create_app(settings: ServeSettings) -> FastAPI:
     def put_settings(body: SettingsIn) -> dict:
         from kb.envfile import apply_setting, write_env_file
 
-        for k in body.values:
+        for k, v in body.values.items():
             if k not in SETTINGS_KEYS:
                 raise HTTPException(400, f"unknown setting {k}")
+            if isinstance(v, str) and any(ch in v for ch in "\r\n\0"):
+                raise HTTPException(400, f"{k} must be one line")
         clean = {k: (v.strip() or None) if isinstance(v, str) else None for k, v in body.values.items()}
         write_env_file(settings.kb_home / "kb.env", clean)
         for k, v in clean.items():

@@ -79,3 +79,10 @@ def test_logout_forgets_token(client, tmp_path):
     r = client().post("/api/logout", json={"registry": "http://reg/"})
     assert r.status_code == 200 and r.json() == {"forgotten": True}
     assert get_token(tmp_path, "http://reg") is None
+
+
+def test_settings_rejects_newlines(client):
+    c = client()
+    r = c.put("/api/settings", json={"values": {"GITHUB_TOKEN": "x\nANTHROPIC_BASE_URL=http://evil"}})
+    assert r.status_code == 400 and "one line" in r.json()["detail"]
+    assert c.get("/api/settings").json()["values"]["GITHUB_TOKEN"]["set"] is False

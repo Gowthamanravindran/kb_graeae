@@ -14,6 +14,11 @@ TYPE_LABEL = {"happy_path": "Happy path", "branches_edges": "Branches and edges"
               "regression": "Regression", "cross_side": "Cross-side effects"}
 
 
+def _safe(cell: str) -> str:
+    """Excel runs a cell starting with = + - @ (or a tab/CR) as a formula: text from Claude or a PR must not."""
+    return "'" + cell if cell and cell[0] in "=+-@\t\r" else cell
+
+
 def _numbered(items: list[str]) -> str:
     return "\n".join(f"{i}. {x}" for i, x in enumerate(items, 1))
 
@@ -44,5 +49,5 @@ def export_csv(ps: PlanStore, project: str, label: str, plan_id: str, priorities
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\r\n")
     w.writerow(COLUMNS)
-    w.writerows(rows)
+    w.writerows([[_safe(str(c)) for c in r] for r in rows])
     return ("﻿" + buf.getvalue()).encode("utf-8")

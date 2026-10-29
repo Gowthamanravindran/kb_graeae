@@ -113,6 +113,7 @@ def reach(head: CodeGraph, base: CodeGraph, base_pack, delta: GraphDelta, invent
             if len(path) > len(f.path):
                 f.path = path
 
+    enqueuers = {e.src for e in head.edges() if e.kind == "enqueues"}  # one scan, not one per path node
     removed_by_file = {}
     for r in delta.nodes_removed:
         repo, rest = r.split(":", 1)
@@ -131,7 +132,7 @@ def reach(head: CodeGraph, base: CodeGraph, base_pack, delta: GraphDelta, invent
                            or (i.kind in structural and (i.repo, i.file) in path_files)]
         f.crosses_repos = len({p.split(":", 1)[0] for p in f.path}) > 1
         f.has_job = any(head.node(p).kind == "queue_topic" for p in f.path if head.has_node(p)) or any(
-            e.kind == "enqueues" for p in f.path for e in head.edges() if e.src == p or e.src == f"{p.split('#')[0]}")
+            p in enqueuers or p.split("#")[0] in enqueuers for p in f.path)
         if base_pack is not None:
             f.modules = sorted({m.id for m in base_pack.modules if set(m.members) & set(f.path + f.changed_functions)})
             cited = {(c.repo, c.file) for fl in base_pack.flows for s in fl.steps if (c := s.citation)}

