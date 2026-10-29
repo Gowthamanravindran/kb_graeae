@@ -22,6 +22,7 @@ Success means:
 | Export | Excel / CSV, one row per case |
 | How a PR is chosen | Branch names per repo (always works), **or** a GitHub PR link (adds title, description, linked issues as intent) |
 | Multi-repo changes | One **change set**: a branch per repo, analysed together, so FE↔BE flows are tested end to end |
+| Base per repo | Each repo has **its own base branch** (e.g. sop-web `master`, sop-backend `develop`). A repo the PR does not touch uses its base as head |
 | Control | A cheap impact map first; the user chooses flows and **how many cases per priority** |
 | Priorities | P0, P1, P2, P3 |
 | Splitting work | Self-serve reservations **and** lead assignment |
@@ -32,6 +33,22 @@ Success means:
 - Feature B needs **git checkouts** with history for every repo in the change set. A `local_path` folder without `.git` gets a clear refusal: "PR analysis needs git repos". Feature A works on any analysed branch.
 - The base branch must already have an analysis (pack). If not, KB says so and offers to analyse it.
 - Slot rules count what the **code** makes testable. Business cases with no code behind them (for example a leap-year month end the code does not special-case) can only arrive as *suggested extras* (§6.4).
+
+## 2a. Branch sets (per-repo branches)
+
+The repos are separate, so their branches are independent. A **branch set** maps each repo to a branch, for example `{sop-web: master, sop-backend: develop}`.
+
+- **Defaults in kb.yaml.** A new optional `default_branch` per repo (in `repos:`) fills in the base and avoids typing it each time. Without it, the base box is empty until chosen.
+- **Analysis.**
+  - `kb analyze` and the desktop **Analyse a branch** dialog accept a branch set: `--branch sop-web=master --branch sop-backend=develop`. A single `--branch main` still means "the same name in every repo", as today.
+  - The pack is stored under a **label** (default: the branch name when all repos share it, otherwise the user names it, e.g. `production`).
+  - The manifest records the branch and commit per repo. The Library shows the per-repo branches under the label.
+- **Finding the base analysis.** For a change set, KB looks for a pack whose manifest has the same branch per repo, and prefers the most recent one. If none exists, KB offers to analyse that branch set first.
+- **Unchanged repos.** A repo whose head equals its base (or that the PR doesn't touch) is still part of the change set, so cross-repo flows reach into it, but it contributes no diff.
+- **PR links.** A GitHub PR belongs to one repo, so a link fills that repo's base and head from the PR. For a change spanning two repos, paste one link per repo, or pick branches.
+- **Git checkouts.** Base and head of a repo are read from separate git worktrees under `$KB_HOME/work`. KB never switches the branch of the user's own working copy. A `local_path` repo must be a git repo for Feature B, and its worktrees are made from it.
+
+This is a change to the stage-1 analysis (checkout per repo, manifest, Library display) and is part of stage 5a.
 
 ## 3. Architecture
 
@@ -58,7 +75,7 @@ START → resolve_change_set → (diff ∥ head_graph) → graph_delta → inven
 
 | Node | Does | Claude |
 |---|---|---|
-| `resolve_change_set` | Branch per repo, or a GitHub PR link, → base and head commits per repo. A PR link also yields title, body and linked issues (GitHub REST, token from `kb.env` `GITHUB_TOKEN`). Refuses without git history, or without a base pack. | no |
+| `resolve_change_set` | A base and head branch per repo (head defaults to base for untouched repos), or GitHub PR links (one per repo), → base and head commits per repo, read from worktrees (§2a). Finds the base pack by its per-repo branches. A PR link also yields title, body and linked issues (GitHub REST, token from `kb.env` `GITHUB_TOKEN`). Refuses without git history, or without a base pack. | no |
 | `diff` | `git diff base...head` per repo → hunks (file, old and new ranges, lines). | no |
 | `head_graph` | Graphify + linkers on the head checkout (the no-LLM part of `kb analyze`), cached by head commits under `$KB_HOME/work`. | no |
 | `graph_delta` | Base pack graph vs head graph: added, removed and changed nodes (by id and content hash) and edges, including FE↔BE links. Maps each hunk to the innermost enclosing function or component. | no |
@@ -110,7 +127,7 @@ The input is a `ScenarioRequest`: scenario text, or an answer id, and the branch
 
 Stored in the pack overlay of the **head** branch (`testplans/<change_set_id>/…` JSON), and published to the registry as overlay items of new kinds.
 
-- **ChangeSet** — `id`, `project`, `base {repo: {branch, commit}}`, `head {repo: {branch, commit}}`, `pr {url, title, body, issues}?`, `created_by`, `created_at`.
+- **ChangeSet** — `id`, `project`, `base {repo: {branch, commit}}`, `head {repo: {branch, commit}}` (head = base for an untouched repo), `base_pack` (label of the matching analysis), `prs {repo: {url, title, body, issues}}`, `created_by`, `created_at`.
 - **ImpactReport** — one per head commit set. Fields:
   - `change_set_id`, `head_commits`;
   - `graph_delta {nodes_added, nodes_removed, nodes_changed, edges_added, edges_removed}`;
@@ -230,7 +247,7 @@ There is a new sidebar view, **Test plans**. Clickable mocks will be supplied wi
 
 1. **Test plans list.**
    - Change sets and scenario requests with status ("Impact ready", "62 of 115 written") and the people involved.
-   - **New PR test plan**: a branch per repo, or a GitHub link that fills the branches in.
+   - **New PR test plan**: a table with one row per repo: **Base** and **PR branch** side by side, the base pre-filled from `default_branch`, and a "no change" option for untouched repos. A GitHub link per repo fills that row in.
    - **New scenario test plan**: free text, or started from **Make test plan** in Ask or Memory.
 2. **Impact.**
    - **Header:** the PR, commits and summary ("14 functions changed in 2 repos, 9 flows affected"), plus the full re-analysis banner when flagged.
@@ -276,6 +293,7 @@ The CLI gets matching commands:
   - adds a branch, a validation and a permission check;
   - removes one behaviour;
   - changes a GraphQL argument used by a screen.
+- **Branch sets:** a different base per repo; an untouched repo; base pack lookup by per-repo branches; worktrees never touch the user's checkout; single-name `--branch` keeps working.
 - **Graph 1 golden:** the exact expected inventory items, flows (including the screen reached only through the changed resolver), slots and counts per priority.
 - **Graph 2 with a scripted fake:**
   - exactly one case per slot;
