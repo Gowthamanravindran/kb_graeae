@@ -1,4 +1,4 @@
-import type { SettingKey, SettingsView, AskPayload, BranchesResponse, Job, MapView, MemoryView, ProjectRow, RegistryStatus, SavedQA, Status } from "./types";
+import type { SettingKey, SettingsView, PlanSummary, TestPlanDetail, Priority, AskPayload, BranchesResponse, Job, MapView, MemoryView, ProjectRow, RegistryStatus, SavedQA, Status } from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, public detail: string) {
@@ -21,6 +21,7 @@ export function createClient({ baseUrl, token }: { baseUrl: string; token: strin
     if (!res.ok) throw new ApiError(res.status, (data && typeof data.detail === "string" ? data.detail : res.statusText) || "error");
     return data as T;
   }
+  const tp = (p: string, id: string) => `/api/projects/${encodeURIComponent(p)}/testplans/${encodeURIComponent(id)}`;
   const b = (p: string, br: string) => `/api/projects/${encodeURIComponent(p)}/branches/${seg(br)}`;
   return {
     status: (fresh = false) => call<Status>("GET", fresh ? "/api/status?fresh=1" : "/api/status"),
@@ -30,6 +31,25 @@ export function createClient({ baseUrl, token }: { baseUrl: string; token: strin
     login: (registry: string, token: string) => call<{ email: string }>("POST", "/api/login", { registry, token }),
     logout: (registry: string) => call<{ forgotten: boolean }>("POST", "/api/logout", { registry }),
     settings: () => call<SettingsView>("GET", "/api/settings"),
+    testplans: (p: string, kind?: "pr" | "scenario") =>
+      call<PlanSummary[]>("GET", `/api/projects/${encodeURIComponent(p)}/testplans${kind ? `?kind=${kind}` : ""}`),
+    newPrPlan: (p: string, body: { base: Record<string, string>; head: Record<string, string | null>; pr_links: Record<string, string> }) =>
+      call<JobRef>("POST", `/api/projects/${encodeURIComponent(p)}/testplans/pr`, body),
+    newScenarioPlan: (p: string, body: { label: string; text?: string; answer_id?: string }) =>
+      call<JobRef>("POST", `/api/projects/${encodeURIComponent(p)}/testplans/scenario`, body),
+    testplan: (p: string, id: string) => call<TestPlanDetail>("GET", `${tp(p, id)}`),
+    generate: (p: string, id: string, counts: Partial<Record<Priority, number>>, perFlowCap: number | null = null) =>
+      call<JobRef>("POST", `${tp(p, id)}/generate`, { counts, per_flow_cap: perFlowCap }),
+    acceptExtra: (p: string, id: string, caseId: string) => call<{ ok: boolean }>("POST", `${tp(p, id)}/extras/${encodeURIComponent(caseId)}/accept`),
+    dismissExtra: (p: string, id: string, caseId: string) => call<{ ok: boolean }>("POST", `${tp(p, id)}/extras/${encodeURIComponent(caseId)}/dismiss`),
+    retrySlot: (p: string, id: string, slotId: string) => call<JobRef>("POST", `${tp(p, id)}/slots/${encodeURIComponent(slotId)}/retry`),
+    exportCsv: async (p: string, id: string, filters: { priority?: string[]; flow?: string[]; status?: string[] } = {}) => {
+      const q = new URLSearchParams();
+      for (const [k, vs] of Object.entries(filters)) for (const v of vs ?? []) q.append(k, v);
+      const res = await fetch(`${baseUrl}${tp(p, id)}/export.csv${q.toString() ? `?${q}` : ""}`, { headers: { "X-KB-Token": token } });
+      if (!res.ok) throw new ApiError(res.status, await res.text());
+      return new Uint8Array(await res.arrayBuffer());
+    },
     saveSettings: (values: Partial<Record<SettingKey, string | null>>) => call<SettingsView>("PUT", "/api/settings", { values }),
     loginSso: (registry: string) => call<JobRef>("POST", "/api/login/sso", { registry }),
     branches: (p: string) => call<BranchesResponse>("GET", `/api/projects/${encodeURIComponent(p)}/branches`),

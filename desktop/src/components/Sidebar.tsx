@@ -4,6 +4,7 @@ import { StatusFooter } from "./StatusFooter";
 
 const NAV: { view: View; label: string }[] = [
   { view: "library", label: "Library" }, { view: "map", label: "Map" }, { view: "ask", label: "Ask" }, { view: "memory", label: "Memory" },
+  { view: "testplans", label: "Test plans" },
   { view: "settings", label: "Settings" },
 ];
 
@@ -19,7 +20,7 @@ export function Sidebar() {
       <div className="flex flex-col gap-1">
         {NAV.map((n) => (
           <a key={n.view} href={`#${n.view}`} aria-current={view === n.view ? "page" : undefined}
-            onClick={(e) => { e.preventDefault(); go(n.view); }}
+            onClick={(e) => { e.preventDefault(); go(n.view, n.view === "testplans" ? { planScreen: "list" } : {}); }}
             className={`rounded-lg px-3 py-2.5 no-underline ${view === n.view ? "bg-accent-soft font-semibold text-accent-ink" : "text-ink hover:bg-bg"}`}>
             {n.label}
           </a>

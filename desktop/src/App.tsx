@@ -9,6 +9,7 @@ import { MapView } from "./views/MapView";
 import { Ask } from "./views/Ask";
 import { Memory } from "./views/Memory";
 import { Settings } from "./views/Settings";
+import { TestPlans } from "./views/TestPlans";
 
 function Main() {
   const { view, project, branch, go } = useApp();
@@ -21,6 +22,7 @@ function Main() {
         {view === "map" && <MapView />}
         {view === "ask" && <Ask key={`${project}@${branch}`} />}
         {view === "memory" && <Memory key={`${project}@${branch}`} />}
+        {view === "testplans" && <TestPlans key={project ?? ""} />}
         {view === "settings" && <Settings />}
         </ErrorBoundary>
       </main>

@@ -24,3 +24,41 @@ export interface Job<T = unknown> { id: string; kind: string; key: string | null
 export interface SettingValue { set: boolean; last4: string | null; source: "file" | "environment" | null; value?: string | null }
 export type SettingKey = "LANGFUSE_PUBLIC_KEY" | "LANGFUSE_SECRET_KEY" | "LANGFUSE_HOST" | "GITHUB_TOKEN";
 export interface SettingsView { env_path: string; values: Record<SettingKey, SettingValue> }
+
+// ---- test plans (stage 5a)
+export type Priority = "P0" | "P1" | "P2" | "P3";
+export type ScenarioType = "happy_path" | "branches_edges" | "errors_failures" | "regression" | "cross_side";
+export interface PlanSummary {
+  id: string; kind: "pr" | "scenario"; title: string; label: string; base: Record<string, string>; head: Record<string, string>;
+  counts_by_status: Record<string, number>; counts_by_priority: Record<string, number>; cases_written: number;
+  updated_at: string | null; has_impact: boolean;
+}
+export interface InventoryItem { id: string; kind: string; change: "added" | "changed" | "removed"; repo: string; file: string; lines: [number, number]; function: string; summary: string; outcomes: string[] }
+export interface ImpactFlow {
+  id: string; name: string; entry_points: string[]; changed_functions: string[]; inventory_ids: string[]; modules: string[];
+  master_flow_id: string | null; risk: number; risk_reasons: string[]; est_claude_calls: number; crosses_repos: boolean; has_job: boolean;
+}
+export interface ImpactReport {
+  change_set_id: string; head_commits: Record<string, string>; graph_delta: Record<string, unknown>;
+  inventory: InventoryItem[]; flows: ImpactFlow[]; needs_full_reanalysis: boolean; full_reanalysis_reason: string;
+}
+export interface CaseSlot {
+  id: string; flow_id: string; scenario_type: ScenarioType; inventory_ids: string[]; outcome: string; priority: Priority; rule: string;
+  status: "planned" | "reserved" | "written" | "stale" | "failed" | "obsolete"; case_id: string | null; fail_reason: string | null;
+}
+export interface PlanScenario { id: string; flow_id: string; type: ScenarioType; title: string; description: string }
+export interface PlanCase {
+  id: string; slot_id: string | null; suggested: boolean; status: string; scenario_id: string | null; flow_id: string; title: string;
+  priority: Priority; preconditions: string[]; steps: string[]; test_data: string[]; expected: string[]; author: string; created_at: string; stale: boolean;
+}
+export interface BranchRefOut { branch: string; commit: string }
+export interface ChangeSetOut {
+  id: string; kind: "pr" | "scenario"; project: string; title: string; base: Record<string, BranchRefOut>; head: Record<string, BranchRefOut>;
+  base_pack: string; prs: Record<string, { url: string; title: string }>; scenario_text: string | null; answer_id: string | null;
+}
+export interface Coverage { items: Record<string, "covered" | "skipped" | "failed" | "uncovered">; by_priority: Record<string, number>; by_status: Record<string, number> }
+export interface TestPlanDetail {
+  summary: PlanSummary | null; change_set: ChangeSetOut; impact: ImpactReport | null; slots: CaseSlot[];
+  scenarios: PlanScenario[]; cases: PlanCase[]; extras: PlanCase[]; coverage: Coverage;
+}
+export interface DesignResult { written: number; failed: number; extras: number }

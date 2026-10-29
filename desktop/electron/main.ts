@@ -95,6 +95,13 @@ ipcMain.handle("kb:open-citation", (_e, c: CitationRef) =>
   openCitation(engine, c, { fetch: globalThis.fetch, openPath: shell.openPath, openExternal: shell.openExternal, editor: process.env.KB_EDITOR }));
 ipcMain.handle("kb:reveal-config", (_e, project: string) =>
   revealConfig(engine, String(project), { fetch: globalThis.fetch, showItemInFolder: shell.showItemInFolder }));
+ipcMain.handle("kb:save-file", async (_e, defaultName: string, data: Uint8Array) => {
+  const r = await dialog.showSaveDialog({ defaultPath: path.join(app.getPath("downloads"), path.basename(String(defaultName))),
+    filters: [{ name: "CSV", extensions: ["csv"] }] });
+  if (r.canceled || !r.filePath) return { saved: false };
+  await fs.promises.writeFile(r.filePath, Buffer.from(data));
+  return { saved: true, path: r.filePath };
+});
 ipcMain.handle("kb:pick-file", async (_e, filters: { name: string; extensions: string[] }[]) => {
   const r = await dialog.showOpenDialog({ properties: ["openFile"], filters });
   return r.canceled ? null : r.filePaths[0];

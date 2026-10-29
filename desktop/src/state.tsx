@@ -2,9 +2,13 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import type { Api } from "./api/client";
 import type { ProjectRow, Status } from "./api/types";
 
-export type View = "library" | "map" | "ask" | "memory" | "settings";
+export type View = "library" | "map" | "ask" | "memory" | "testplans" | "settings";
+export type PlanScreen = "list" | "impact" | "board";
 export interface AskSeed { qaId?: string; question?: string; jobId?: string }
-export interface UiState { project: string | null; branch: string | null; view: View; askSeed: AskSeed | null }
+export interface UiState {
+  project: string | null; branch: string | null; view: View; askSeed: AskSeed | null;
+  planId?: string | null; planScreen?: PlanScreen; planJobId?: string | null;
+}
 
 interface Ctx extends UiState {
   api: Api;
@@ -59,11 +63,11 @@ export function AppProvider({ api, initial, children }: { api: Api; initial?: Pa
   }, [refresh]);
   useEffect(() => {
     try {
-      localStorage.setItem(KEY, JSON.stringify({ project: ui.project, branch: ui.branch, view: ui.view }));
+      localStorage.setItem(KEY, JSON.stringify({ project: ui.project, branch: ui.branch, view: ui.view, planId: ui.planId, planScreen: ui.planScreen }));
     } catch {
       /* storage unavailable: fine */
     }
-  }, [ui.project, ui.branch, ui.view]);
+  }, [ui.project, ui.branch, ui.view, ui.planId, ui.planScreen]);
   const value = useMemo<Ctx>(() => ({
     ...ui, api, status, projects,
     current: projects.find((p) => p.name === ui.project) ?? null,
