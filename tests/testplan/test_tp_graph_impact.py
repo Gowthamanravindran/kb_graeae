@@ -171,3 +171,32 @@ def test_reconcile_does_not_lose_a_concurrent_write(env, monkeypatch):
     started["t"].join(5)
     s = next(s for s in ps.load_slots("mini", "production", pid) if s.id == target)
     assert (s.status, s.case_id) == ("written", "TC-777")
+
+
+def test_pr_base_wins_over_default_branch(env, monkeypatch):
+    fx, cfg, store = env
+    from kb.testplan import github
+
+    cfg.repo("mini-be").default_branch = "master"  # kb.yaml's default isn't this PR's base
+    monkeypatch.setattr(github, "_get", lambda url, token: {
+        "title": "t", "body": "", "base": {"ref": "develop", "repo": {"full_name": "acme/mini-be"}},
+        "head": {"ref": HEAD, "repo": {"full_name": "acme/mini-be"}}})
+    req = ChangeSetRequest(project="mini", base={"mini-fe": "master"}, head={"mini-fe": None, "mini-be": None},
+                           pr_links={"mini-be": "https://github.com/acme/mini-be/pull/7"})
+    rep = run_impact(cfg, req, store, _names(), RecordingTracer())
+    cs = PlanStore(store).load_change_set("mini", "production", rep.change_set_id)
+    assert cs.base["mini-be"].branch == "develop"
+
+
+def test_fork_pr_uses_the_pull_ref(monkeypatch):
+    from kb.testplan import github
+
+    monkeypatch.setattr(github, "_get", lambda url, token: {
+        "title": "t", "body": "", "base": {"ref": "develop", "repo": {"full_name": "acme/mini-be"}},
+        "head": {"ref": "my-fix", "repo": {"full_name": "someone/mini-be"}}})
+    pr = github.pr_info("https://github.com/acme/mini-be/pull/7")
+    assert pr.head_ref == "pull/7/head" and pr.base_ref == "develop"
+    monkeypatch.setattr(github, "_get", lambda url, token: {
+        "title": "t", "body": "", "base": {"ref": "develop", "repo": {"full_name": "acme/mini-be"}},
+        "head": {"ref": "my-fix", "repo": None}})  # the fork was deleted
+    assert github.pr_info("https://github.com/acme/mini-be/pull/7").head_ref == "pull/7/head"

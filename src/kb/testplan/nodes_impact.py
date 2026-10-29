@@ -11,14 +11,14 @@ from pydantic import BaseModel
 from kb.errors import KbError
 from kb.llm.base import LLMRequest
 from kb.llm.json_call import ask_json
-from kb.testplan.delta import graph_delta, head_graph, symbol_spans
+from kb.testplan.delta import find_span, graph_delta, head_graph
 from kb.testplan.diff import repo_diff, repo_renames
-from kb.testplan.inventory import inventory
+from kb.testplan.inventory import ALIGN, _similar, inventory
 from kb.testplan.models import BranchRef, ChangeSet, ImpactReport, PrInfo
 from kb.testplan.reach import reach, structural_items
 from kb.testplan.slots import assign_priorities, estimate_calls, plan_slots, risk
 from kb.testplan.store import PlanStore
-from kb.testplan.worktrees import git_source, require_git, worktree_at
+from kb.testplan.worktrees import diff_source, prune_work, require_git, worktree_at
 
 
 class ChangeSetRequest(BaseModel):
@@ -55,7 +55,8 @@ def resolve_change_set(state: dict, deps: ImpactDeps) -> dict:
 
     cfg, req = deps.cfg, state["request"]
     deps.report("Reading the change set", 0.02)
-    base = {r.name: (req.base.get(r.name) or r.default_branch or "").strip() for r in cfg.repos}
+    # base: what the request names, else the PR's own base, else kb.yaml's default_branch
+    base = {r.name: (req.base.get(r.name) or "").strip() for r in cfg.repos}
     head = {r.name: (req.head.get(r.name) or "").strip() or None for r in cfg.repos}
     prs: dict[str, PrInfo] = {}
     for repo, url in (req.pr_links or {}).items():
@@ -65,10 +66,12 @@ def resolve_change_set(state: dict, deps: ImpactDeps) -> dict:
         prs[repo] = PrInfo(url=url, title=pr.title, body=pr.body, issues=pr.issues)
         head[repo] = head.get(repo) or pr.head_ref
         base[repo] = base.get(repo) or pr.base_ref
+    base = {r.name: base[r.name] or (r.default_branch or "") for r in cfg.repos}
     missing = [r for r, b in base.items() if not b]
     if missing:
         raise KbError(f"pick a base branch for: {', '.join(missing)}")
     work = deps.store.kb_home / "work" / cfg.project
+    prune_work(work)
     require_git(cfg, [r.name for r in cfg.repos], work)
     label = deps.store.find_pack_by_branches(cfg.project, base)
     if label is None:
@@ -92,7 +95,7 @@ def diff(state: dict, deps: ImpactDeps) -> dict:
     for r, ref in cs.base.items():
         if cs.head[r].commit == ref.commit:
             continue
-        src = git_source(cfg.repo(r), state["work"])
+        src = diff_source(cfg.repo(r), state["work"], ref.commit, cs.head[r].commit)
         hunks += repo_diff(src, r, ref.commit, cs.head[r].commit, cfg.ignore, subpath=cfg.repo(r).path)
         renames.update({(r, o): n for o, n in repo_renames(src, ref.commit, cs.head[r].commit, cfg.repo(r).path).items()})
     return {"hunks": hunks, "renames": renames}
@@ -191,7 +194,7 @@ def _function_hashes(state: dict) -> dict[str, str]:
             src = (Path(co.root) / file).read_text(encoding="utf-8", errors="replace") if co else ""
         except OSError:
             src = ""
-        span = next(((a, b) for n, a, b in symbol_spans(src, file) if n == name.split("@")[0]), None) if name else None
+        span = find_span(src, file, name) if name else None
         text = "\n".join(src.splitlines()[span[0] - 1:span[1]]) if span else src
         out[fid] = hashlib.sha1(text.encode()).hexdigest()[:12]
     return out
@@ -234,23 +237,59 @@ def reconcile(ps: PlanStore, project: str, label: str, pid: str, new_slots, prev
                 fns += [f for f in new_hash if f.startswith(f"{it.repo}:{it.file}#{it.function}")]
         if not fns and slot.flow_id in flows:
             fns = flows[slot.flow_id].changed_functions
-        return any(old_hash.get(f) is not None and old_hash.get(f) != new_hash.get(f) for f in fns)
+        # a function with no previous hash wasn't changed by the PR before, so it now differs from what the
+        # case was written against; with no hashes at all (an old report) nothing can be told
+        return bool(old_hash) and any(old_hash.get(f) != new_hash.get(f) for f in fns if f in new_hash)
+
+    old_inv = {i.id: i for i in (previous.inventory if previous else [])}
+
+    def successor(o, unmatched: list) -> object | None:
+        """The new slot standing for old slot `o` whose decision point was edited, not removed
+        (`isAdmin` → `isAdmin || isOwner`): same flow, type, outcome and rule, and a similar decision point
+        in the same function."""
+        oi = old_inv.get(o.inventory_ids[0]) if o.inventory_ids else None
+        if oi is None:
+            return None
+        best, score = None, 0.0
+        for s in unmatched:
+            ni = inv.get(s.inventory_ids[0]) if s.inventory_ids else None
+            if (ni is None or (s.flow_id, s.scenario_type, s.outcome, s.rule) != (o.flow_id, o.scenario_type, o.outcome, o.rule)
+                    or (ni.repo, ni.function, ni.kind) != (oi.repo, oi.function, oi.kind)):
+                continue
+            r = _similar(oi.text or oi.summary, ni.text or ni.summary)
+            if r > score:
+                best, score = s, r
+        return best if score >= ALIGN else None
+
+    def carry(s, o, cases, stale: bool) -> None:
+        s.status, s.case_id, s.assigned_to, s.fail_reason = o.status, o.case_id, o.assigned_to, o.fail_reason
+        s.reserved_by = o.reserved_by
+        if s.status in ("written", "stale") and stale:
+            s.status = "stale"
+            c = cases.get(s.case_id or "")
+            if c is not None:
+                ps.save_case(project, label, pid, c.model_copy(update={"stale": True, "status": "stale", "slot_id": s.id}))
 
     def merge(current: list) -> None:
         old = {s.id: s for s in current}
         cases = {c.id: c for c in ps.cases(project, label, pid)}
         merged = []
+        unmatched = []
         for s in new_slots:
             o = old.pop(s.id, None)
             if o is not None:
-                s.status, s.case_id, s.assigned_to, s.fail_reason = o.status, o.case_id, o.assigned_to, o.fail_reason
-                s.reserved_by = o.reserved_by
-                if s.status in ("written", "stale") and touched(s):
-                    s.status = "stale"
-                    c = cases.get(s.case_id or "")
-                    if c is not None:
-                        ps.save_case(project, label, pid, c.model_copy(update={"stale": True, "status": "stale"}))
+                carry(s, o, cases, touched(s))
+            else:
+                unmatched.append(s)
             merged.append(s)
+        for oid, o in list(old.items()):  # an edited decision point keeps its cases, now stale
+            if not (o.case_id or o.status in ("written", "stale")):
+                continue
+            s = successor(o, unmatched)
+            if s is not None:
+                unmatched.remove(s)
+                carry(s, o, cases, True)
+                del old[oid]
         for o in old.values():  # slots whose decision point disappeared
             if o.case_id or o.status in ("written", "stale", "obsolete"):
                 o.status = "obsolete"

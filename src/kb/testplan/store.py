@@ -109,6 +109,25 @@ class PlanStore:
                 return json.loads((d / "manifest.json").read_text())["branch"] if (d / "manifest.json").exists() else None
         return None
 
+    def summary(self, project: str, label: str, plan_id: str) -> PlanSummary | None:
+        d = self.dir(project, label, plan_id)
+        cs_file = d / "changeset.json"
+        if not cs_file.exists():
+            return None
+        cs = ChangeSet.model_validate_json(cs_file.read_text())
+        slots = self.load_slots(project, label, cs.id)
+        cases = [c for c in self.cases(project, label, cs.id) if c.status in ("written", "stale")]
+        mtimes = [p.stat().st_mtime for p in d.rglob("*.json")]
+        return PlanSummary(
+            id=cs.id, kind=cs.kind, title=cs.title, label=label,
+            base={k: v.branch for k, v in cs.base.items()},
+            head={k: v.branch for k, v in cs.head.items()},
+            counts_by_status=dict(Counter(s.status for s in slots)),
+            counts_by_priority=dict(Counter(s.priority for s in slots)),
+            cases_written=len(cases),
+            updated_at=datetime.fromtimestamp(max(mtimes)) if mtimes else None,
+            has_impact=(d / "impact.json").exists())
+
     def list_plans(self, project: str) -> list[PlanSummary]:
         out = []
         for d in sorted((self.packs.kb_home / "packs").glob(f"{project}@*")):
@@ -117,17 +136,7 @@ class PlanStore:
                 continue
             label = json.loads(mf.read_text())["branch"]
             for cs_file in sorted((d / "overlay" / "testplans").glob("*/changeset.json")):
-                cs = ChangeSet.model_validate_json(cs_file.read_text())
-                slots = self.load_slots(project, label, cs.id)
-                cases = [c for c in self.cases(project, label, cs.id) if c.status in ("written", "stale")]
-                mtimes = [p.stat().st_mtime for p in cs_file.parent.rglob("*.json")]
-                out.append(PlanSummary(
-                    id=cs.id, kind=cs.kind, title=cs.title, label=label,
-                    base={k: v.branch for k, v in cs.base.items()},
-                    head={k: v.branch for k, v in cs.head.items()},
-                    counts_by_status=dict(Counter(s.status for s in slots)),
-                    counts_by_priority=dict(Counter(s.priority for s in slots)),
-                    cases_written=len(cases),
-                    updated_at=datetime.fromtimestamp(max(mtimes)) if mtimes else None,
-                    has_impact=(cs_file.parent / "impact.json").exists()))
+                row = self.summary(project, label, cs_file.parent.name)
+                if row is not None:
+                    out.append(row)
         return sorted(out, key=lambda r: r.updated_at or datetime.min, reverse=True)

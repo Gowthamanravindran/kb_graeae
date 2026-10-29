@@ -86,7 +86,8 @@ def test_write_scenarios_fills_missing_types(tmp_path):
 def test_cases_one_per_slot(tmp_path):
     w = _work(tmp_path, FakeProvider([_cases_reply(["s1", "s2", "s3"], [{"title": "Leap year", "steps": ["a"], "expected": ["b"]}])]))
     w.head = F([st("x")])
-    cases, extras = write_cases(w, SCEN, SLOTS)
+    cases, extras, failed = write_cases(w, SCEN, SLOTS)
+    assert failed == {}
     assert [c.slot_id for c in cases] == ["s1", "s2", "s3"] and [c.priority for c in cases] == ["P0", "P0", "P1"]
     assert len(extras) == 1 and extras[0].suggested
 
@@ -96,14 +97,14 @@ def test_cases_batched_by_15(tmp_path):
     p = FakeProvider([_cases_reply([f"m{i}" for i in range(15)]), _cases_reply([f"m{i}" for i in range(15, 20)])])
     w = _work(tmp_path, p)
     w.head = F([st("x")])
-    cases, _ = write_cases(w, SCEN, many)
+    cases, _, _ = write_cases(w, SCEN, many)
     assert len(cases) == 20 and len(p.requests) == 2
 
 
 def test_cases_missing_and_unknown_slots(tmp_path):
     w = _work(tmp_path, FakeProvider([_cases_reply(["s1", "s2", "zz"])]))
     w.head = F([st("x")])
-    cases, _ = write_cases(w, SCEN, SLOTS)
+    cases, _, _ = write_cases(w, SCEN, SLOTS)
     kept, rejected = check_cases(cases, SLOTS)
     assert [c.slot_id for c in kept] == ["s1", "s2"]
     assert rejected == {"s3": "not returned"}
@@ -112,7 +113,26 @@ def test_cases_missing_and_unknown_slots(tmp_path):
 def test_check_cases_rejects_empty_expected(tmp_path):
     w = _work(tmp_path, FakeProvider([_cases_reply(["s1"])]))
     w.head = F([st("x")])
-    cases, _ = write_cases(w, SCEN, SLOTS[:1])
+    cases, _, _ = write_cases(w, SCEN, SLOTS[:1])
     cases[0].expected = []
     kept, rejected = check_cases(cases, SLOTS[:1])
     assert kept == [] and rejected == {"s1": "missing steps or expected result"}
+
+
+def test_a_failed_batch_keeps_the_batches_that_worked(tmp_path):
+    from kb.errors import KbError
+
+    many = [CaseSlot(id=f"m{i}", flow_id="fl", scenario_type="branches_edges", priority="P2") for i in range(20)]
+
+    class SecondBatchFails(FakeProvider):
+        def run(self, req):
+            if "slot m15 " in req.prompt:
+                self.requests.append(req)
+                raise KbError("Claude timed out")
+            return super().run(req)
+    p = SecondBatchFails([_cases_reply([f"m{i}" for i in range(15)])])
+    w = _work(tmp_path, p)
+    w.head = F([st("x")])
+    cases, _, failed = write_cases(w, SCEN, many)
+    assert [c.slot_id for c in cases] == [f"m{i}" for i in range(15)]
+    assert failed == {f"m{i}": "Claude timed out" for i in range(15, 20)}

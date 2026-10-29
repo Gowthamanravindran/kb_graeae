@@ -84,14 +84,14 @@ def _changed_code(ctx: _Ctx, cs, flow) -> str:
     if cs.kind == "scenario":
         return ""
     from kb.testplan.diff import repo_diff
-    from kb.testplan.worktrees import git_source
+    from kb.testplan.worktrees import diff_source
 
     files = {(c.split(":", 1)[0], c.split(":", 1)[1].split("#", 1)[0]) for c in flow.changed_functions}
     out = []
     for r, ref in cs.base.items():
         if cs.head[r].commit == ref.commit:
             continue
-        src = git_source(ctx.cfg.repo(r), ctx.store.kb_home / "work" / ctx.cfg.project)
+        src = diff_source(ctx.cfg.repo(r), ctx.store.kb_home / "work" / ctx.cfg.project, ref.commit, cs.head[r].commit)
         for h in repo_diff(src, r, ref.commit, cs.head[r].commit, ctx.cfg.ignore, subpath=ctx.cfg.repo(r).path):
             if (r, h.file) in files or (r, h.old_file) in files:
                 out.append(f"--- {r}:{h.file} @{h.new_start}\n" + "\n".join(
@@ -176,8 +176,8 @@ def flow_node(state: DesignState, ctx: _Ctx) -> dict:
             scen = write_scenarios(w, slots, existing)
             for s in scen:
                 ctx.ps.save_scenario(project, label, pid, s)
-            cases, extras = write_cases(w, scen, slots)
-            kept, rejected = check_cases(cases, slots)
+            cases, extras, failed = write_cases(w, scen, slots)
+            kept, rejected = check_cases(cases, [s for s in slots if s.id not in failed])
             ids = {}
             for c in kept:
                 c.id = ctx.ps.next_case_id(project, label, pid)
@@ -190,9 +190,11 @@ def flow_node(state: DesignState, ctx: _Ctx) -> dict:
                         s.status, s.case_id, s.reserved_by = "written", ids[s.id], None
                     elif s.id in rejected:
                         s.status, s.fail_reason, s.reserved_by = "planned", rejected[s.id], None
+                    elif s.id in failed and s.status == "reserved":
+                        s.status, s.fail_reason, s.reserved_by = "failed", failed[s.id], None
             ctx.ps.update_slots(project, label, pid, apply)
         ctx.done.append(fid)
-        return {"results": [{"flow_id": fid, "written": len(kept), "failed": 0,
+        return {"results": [{"flow_id": fid, "written": len(kept), "failed": len(failed),
                              "extras": [e.model_dump(mode="json") for e in extras]}]}
     except Exception as e:  # noqa: BLE001 — one flow failing must not stop the others
         reason = str(e) or type(e).__name__

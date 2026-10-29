@@ -14,7 +14,16 @@ from kb.testplan.delta import symbol_spans
 from kb.testplan.inventory import _id, _summary, extract_decisions
 from kb.testplan.models import BranchRef, CaseSlot, ChangeSet, ImpactFlow, ImpactReport, InventoryItem
 from kb.testplan.slots import assign_priorities, plan_slots, risk
+from kb.testplan.nodes_impact import reconcile
 from kb.testplan.store import PlanStore
+
+
+def innermost(spans: list[tuple[str, int, int]], start: int, end: int) -> list[tuple[str, int, int]]:
+    """Symbols overlapping lines [start, end], dropping any that contains another overlapping one (a class
+    whose method is cited), so each decision point is listed once, under its method."""
+    hit = [s for s in spans if s[1] <= end and start <= s[2]]
+    return [s for s in hit if not any(o is not s and s[1] <= o[1] and o[2] <= s[2] and (o[1], o[2]) != (s[1], s[2])
+                                      for o in hit)]
 
 
 class ScenarioPlan(BaseModel):
@@ -58,6 +67,7 @@ def plan_scenario(cfg, label: str, store, provider, tracer, text: str | None = N
     cos, _ = available_checkouts(cfg, label, store, pack.manifest.commits, pack.manifest.branches)
     items: dict[str, InventoryItem] = {}
     functions: list[str] = []
+    hashes: dict[str, str] = {}  # each function's source, so re-planning after a code change marks cases stale
     for step in flow.steps:
         c = step.citation
         co = cos.get(c.repo) if c else None
@@ -67,17 +77,17 @@ def plan_scenario(cfg, label: str, store, provider, tracer, text: str | None = N
             src = (co.root / c.file).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for name, a, b in symbol_spans(src, c.file):
-            if a <= c.line_end and c.line_start <= b:
-                fid = f"{c.repo}:{c.file}#{name}"
-                if fid in functions:
-                    continue
-                functions.append(fid)
-                for d in extract_decisions(src, c.file, a, b):
-                    iid = _id(c.repo, c.file, name, d.kind, d.norm)
-                    items.setdefault(iid, InventoryItem(id=iid, kind=d.kind, change="added", repo=c.repo, file=c.file,
-                                                        lines=(d.line, d.line), function=name, outcomes=d.outcomes,
-                                                        summary=_summary(d.kind, d), text=d.norm))
+        for name, a, b in innermost(symbol_spans(src, c.file), c.line_start, c.line_end):
+            fid = f"{c.repo}:{c.file}#{name}"
+            if fid in functions:
+                continue
+            functions.append(fid)
+            hashes[fid] = hashlib.sha1("\n".join(src.splitlines()[a - 1:b]).encode()).hexdigest()[:12]
+            for d in extract_decisions(src, c.file, a, b):
+                iid = _id(c.repo, c.file, name, d.kind, d.norm)
+                items.setdefault(iid, InventoryItem(id=iid, kind=d.kind, change="added", repo=c.repo, file=c.file,
+                                                    lines=(d.line, d.line), function=name, outcomes=d.outcomes,
+                                                    summary=_summary(d.kind, d), text=d.norm))
     key = answer_id or (text or "").strip().lower()
     pid = "sc-" + hashlib.sha1(f"{cfg.project}|{label}|{key}".encode()).hexdigest()[:10]
     repos = {f.split(":", 1)[0] for f in functions}
@@ -96,16 +106,15 @@ def plan_scenario(cfg, label: str, store, provider, tracer, text: str | None = N
     cs = ChangeSet(id=pid, kind="scenario", project=cfg.project, title=title, base=refs, head=refs, base_pack=label,
                    scenario_text=text, answer_id=answer_id, created_by=author)
     ps.save_change_set(label, cs)
-    ps.save_impact(cfg.project, label, ImpactReport(change_set_id=pid, head_commits=dict(pack.manifest.commits),
-                                                    inventory=inv, flows=[imp_flow], created_by=author))
-    old = {s.id: s for s in ps.load_slots(cfg.project, label, pid)}
-    for s in slots:  # re-planning keeps what was already written
-        if s.id in old:
-            st = old[s.id].status
-            s.status, s.case_id = ("planned" if st == "reserved" else st), old[s.id].case_id
-    ps.save_slots(cfg.project, label, pid, slots)
+    report = ImpactReport(change_set_id=pid, head_commits=dict(pack.manifest.commits), inventory=inv, flows=[imp_flow],
+                          graph_delta={"function_hashes": hashes}, created_by=author)
+    previous = ps.load_impact(cfg.project, label, pid)
+    # re-planning keeps what was written: edited code → stale, a decision point that's gone → obsolete
+    reconcile(ps, cfg.project, label, pid, slots, previous, report)
+    ps.save_impact(cfg.project, label, report)
+    slots = ps.load_slots(cfg.project, label, pid)
     # the flow is already traced: reuse it as the plan's head trace
     tp = ps.dir(cfg.project, label, pid) / "traces" / f"{imp_flow.id}-head-{commits_key({r: b.commit for r, b in refs.items()})}.json"
     tp.parent.mkdir(parents=True, exist_ok=True)
     tp.write_text(flow.model_dump_json())
-    return ScenarioPlan(plan_id=pid, flow=imp_flow, slots=slots, counts=dict(Counter(s.priority for s in slots)))
+    return ScenarioPlan(plan_id=pid, flow=imp_flow, slots=slots, counts=dict(Counter(s.priority for s in slots if s.status != "obsolete")))

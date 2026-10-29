@@ -473,6 +473,14 @@ def create_app(settings: ServeSettings) -> FastAPI:
             raise HTTPException(404, f"no test plan {plan_id}")
         return ps, label
 
+    @app.get("/api/github/pr")
+    def github_pr(url: str) -> dict:
+        """The branches of a pull request, so the PR form can fill its base and PR branch from the link."""
+        from kb.testplan.github import pr_info
+
+        pr = pr_info(url)
+        return {"title": pr.title, "base_ref": pr.base_ref, "head_ref": pr.head_ref}
+
     @app.get("/api/projects/{name}/testplans")
     def list_testplans(name: str, kind: str | None = None) -> list[dict]:
         from kb.testplan.store import PlanStore
@@ -519,7 +527,7 @@ def create_app(settings: ServeSettings) -> FastAPI:
 
         cfg = ws.config(name)
         ps, label = _plan(cfg, plan_id)
-        summary = next((r for r in ps.list_plans(cfg.project) if r.id == plan_id), None)
+        summary = ps.summary(cfg.project, label, plan_id)
         impact = ps.load_impact(cfg.project, label, plan_id)
         cases = ps.cases(cfg.project, label, plan_id)
         return {"summary": summary.model_dump(mode="json") if summary else None,
@@ -531,12 +539,14 @@ def create_app(settings: ServeSettings) -> FastAPI:
                 "extras": [c.model_dump(mode="json") for c in cases if c.suggested and c.status == "suggested"],
                 "coverage": coverage_for(ps, cfg.project, label, plan_id).model_dump()}
 
-    def _design_job(cfg, plan_id: str, label: str, mode: str, counts: dict, cap, only=None, flow_ids=None):
+    def _design_job(cfg, plan_id: str, label: str, mode: str, counts: dict, cap, only=None, flow_ids=None, before=None):
         from kb.cli import _author
         from kb.testplan import graph_design
         from kb.tracing import make_tracer
 
         def run(rep):
+            if before is not None:  # changes that must wait until the job is sure to run
+                before()
             res = graph_design.run_design(cfg, plan_id, label, settings.store(), settings.provider(), make_tracer(cfg),
                                           mode, counts, cap, progress=lambda text, frac: rep.step(text, frac),
                                           author=_author(), only=only, flow_ids=flow_ids)
@@ -556,24 +566,32 @@ def create_app(settings: ServeSettings) -> FastAPI:
     def retry_slot(name: str, plan_id: str, slot_id: str) -> dict:
         cfg = ws.config(name)
         ps, label = _plan(cfg, plan_id)
-        old_case = {}
-
-        def reopen(slots):
-            for s in slots:
-                if s.id == slot_id:
-                    if s.status not in ("planned", "failed", "stale"):
-                        raise HTTPException(409, f"slot {slot_id} is {s.status}")
-                    old_case["id"] = s.case_id
-                    s.status, s.fail_reason, s.case_id = "planned", None, None
-                    return
+        retryable = ("planned", "failed", "stale")
+        slot = next((s for s in ps.load_slots(cfg.project, label, plan_id) if s.id == slot_id), None)
+        if slot is None:
             raise HTTPException(404, f"no slot {slot_id}")
-        ps.update_slots(cfg.project, label, plan_id, reopen)
-        if old_case.get("id"):  # a stale case being regenerated: keep the old one, marked obsolete
-            c = next((c for c in ps.cases(cfg.project, label, plan_id) if c.id == old_case["id"]), None)
-            if c is not None:
-                ps.save_case(cfg.project, label, plan_id, c.model_copy(update={"status": "obsolete"}))
+        if slot.status not in retryable:
+            raise HTTPException(409, f"slot {slot_id} is {slot.status}")
+
+        def reopen() -> None:
+            """Runs inside the job, so a refused job (another generation running) changes nothing."""
+            old_case = {}
+
+            def fn(slots):
+                for s in slots:
+                    if s.id == slot_id:
+                        if s.status not in retryable:
+                            raise KbError(f"slot {slot_id} is {s.status} now")
+                        old_case["id"] = s.case_id
+                        s.status, s.fail_reason, s.case_id = "planned", None, None
+            ps.update_slots(cfg.project, label, plan_id, fn)
+            if old_case.get("id"):  # a stale case being regenerated: keep the old one, marked obsolete
+                c = next((c for c in ps.cases(cfg.project, label, plan_id) if c.id == old_case["id"]), None)
+                if c is not None:
+                    ps.save_case(cfg.project, label, plan_id, c.model_copy(update={"status": "obsolete"}))
         kind = ps.load_change_set(cfg.project, label, plan_id).kind
-        return _design_job(cfg, plan_id, label, "scenario" if kind == "scenario" else "more", {}, None, only={slot_id})
+        return _design_job(cfg, plan_id, label, "scenario" if kind == "scenario" else "more", {}, None, only={slot_id},
+                           before=reopen)
 
     @app.post("/api/projects/{name}/testplans/{plan_id}/extras/{case_id}/{action}")
     def extra_action(name: str, plan_id: str, case_id: str, action: str) -> dict:

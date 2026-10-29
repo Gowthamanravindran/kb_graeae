@@ -109,3 +109,19 @@ def test_leftover_reserved_slots_are_reclaimed(plan):
     ps.update_slots("mini", "production", pid, crash)
     res = run_design(cfg, pid, "production", store, DesignFake(), RecordingTracer(), "pr", {"P0": 2}, None)
     assert res.written == 2 and not [s for s in _slots(store, pid) if s.status == "reserved"]
+
+
+def test_partly_failed_flow_saves_written_cases_and_fails_the_rest(plan, monkeypatch):
+    from kb.testplan import graph_design, nodes_design
+
+    cfg, store, pid = plan
+    real = nodes_design.write_cases
+
+    def half(w, scen, slots):
+        cases, extras, _ = real(w, scen, slots[:1])
+        return cases, extras, {s.id: "Claude timed out" for s in slots[1:]}
+    monkeypatch.setattr(graph_design, "write_cases", half)
+    res = run_design(cfg, pid, "production", store, DesignFake(), RecordingTracer(), "pr", {"P0": 3}, None)
+    st = Counter(s.status for s in _slots(store, pid) if s.priority == "P0")
+    assert res.written >= 1 and res.failed >= 1 and st["written"] == res.written and st["failed"] == res.failed
+    assert {s.fail_reason for s in _slots(store, pid) if s.status == "failed"} == {"Claude timed out"}

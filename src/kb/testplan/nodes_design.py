@@ -225,12 +225,15 @@ class CasesOut(BaseModel):
     extras: list[_Case] = Field(default_factory=list)
 
 
-def write_cases(work: DesignWork, scenarios: list[Scenario], slots: list[CaseSlot]) -> tuple[list[TestCase], list[TestCase]]:
-    """One Claude call per batch of ≤15 slots; returns (cases with slot ids, suggested extras)."""
+def write_cases(work: DesignWork, scenarios: list[Scenario], slots: list[CaseSlot]
+                ) -> tuple[list[TestCase], list[TestCase], dict[str, str]]:
+    """One Claude call per batch of ≤15 slots; returns (cases with slot ids, suggested extras, {slot id: reason}
+    for batches that failed). A failed batch doesn't throw away the ones that worked; if none worked, it raises."""
     inv = {i.id: i for i in work.inventory}
     scen_by_type = {s.type: s for s in scenarios}
     cwd, extra = _roots(work)
-    written, extras = [], []
+    written, extras, failed = [], [], {}
+    last_error: Exception | None = None
     for i in range(0, len(slots), CASES_PER_CALL):
         batch = slots[i:i + CASES_PER_CALL]
         lines = []
@@ -244,8 +247,13 @@ def write_cases(work: DesignWork, scenarios: list[Scenario], slots: list[CaseSlo
                   + "\n\nIf you see something important to test that no slot covers, add it to \"extras\" (no slot id)."
                   + ' Return JSON: {"cases": [{"slot_id": "...", "title": "...", "preconditions": ["..."], '
                     '"steps": ["..."], "test_data": ["..."], "expected": ["..."]}], "extras": []}')
-        got = ask_json(work.provider, LLMRequest(prompt=prompt, system=QA_SYSTEM, cwd=cwd, extra_dirs=extra,
-                                                 allow_tools=False), CasesOut, work.tracer, "cases")
+        try:
+            got = ask_json(work.provider, LLMRequest(prompt=prompt, system=QA_SYSTEM, cwd=cwd, extra_dirs=extra,
+                                                     allow_tools=False), CasesOut, work.tracer, "cases")
+        except Exception as e:  # noqa: BLE001 — this batch's slots fail; earlier and later batches stand
+            last_error = e
+            failed.update({s.id: str(e) or type(e).__name__ for s in batch})
+            continue
         prio = {s.id: s.priority for s in batch}
         typ = {s.id: s.scenario_type for s in batch}
         refs = [st.citation for st in (work.head.steps if work.head else []) if st.citation]
@@ -260,7 +268,9 @@ def write_cases(work: DesignWork, scenarios: list[Scenario], slots: list[CaseSlo
             extras.append(TestCase(id="", suggested=True, status="suggested", flow_id=work.flow.id, title=c.title,
                                    priority="P2", preconditions=c.preconditions, steps=c.steps,
                                    test_data=c.test_data, expected=c.expected, author=work.author))
-    return written, extras
+    if last_error is not None and len(failed) == len(slots):
+        raise last_error
+    return written, extras, failed
 
 
 def check_cases(cases: list[TestCase], slots: list[CaseSlot]) -> tuple[list[TestCase], dict[str, str]]:

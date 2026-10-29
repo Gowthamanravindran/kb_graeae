@@ -38,3 +38,34 @@ test("editor_url_handles_windows_paths", () => {
   expect(editorUrl("C:\\w\\a.ts", 3)).toBe("vscode://file/C:/w/a.ts:3");
   expect(editorUrl("/w/a.ts", 3)).toBe("vscode://file/w/a.ts:3");
 });
+
+function revealDeps(path: string, platform: string) {
+  const d = deps({ status: 200, body: { path, line: 3 } });
+  return { ...d, showItemInFolder: vi.fn(), platform };
+}
+
+test("script_like_files_are_shown_in_the_folder_not_opened", async () => {
+  for (const p of ["/w/scripts/deploy.sh", "/w/run.command", "/w/Tool.app", "/w/Makefile", "/w/x.ps1"]) {
+    const d = revealDeps(p, "darwin");
+    expect(await openCitation({ port: 4000, token: "t" }, c, d)).toEqual({ ok: true, revealed: true });
+    expect(d.openPath).not.toHaveBeenCalled();
+    expect(d.showItemInFolder).toHaveBeenCalledWith(p);
+  }
+});
+
+test("javascript_is_not_opened_on_windows", async () => {
+  const win = revealDeps("C:\\w\\src\\a.js", "win32");
+  await openCitation({ port: 4000, token: "t" }, c, win);
+  expect(win.openPath).not.toHaveBeenCalled();
+  const mac = revealDeps("/w/src/a.js", "darwin");
+  await openCitation({ port: 4000, token: "t" }, c, mac);
+  expect(mac.openPath).toHaveBeenCalledWith("/w/src/a.js");
+});
+
+test("source_files_still_open", async () => {
+  for (const p of ["/w/src/a.ts", "/w/src/B.tsx", "/w/schema.graphql", "/w/README.md", "/w/kb.yaml"]) {
+    const d = revealDeps(p, "win32");
+    await openCitation({ port: 4000, token: "t" }, c, d);
+    expect(d.openPath).toHaveBeenCalledWith(p);
+  }
+});

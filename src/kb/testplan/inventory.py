@@ -11,13 +11,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kb.ingest.checkout import Checkout
-from kb.testplan.delta import TS_EXTS, GraphDelta, symbol_spans, tree_for
+from kb.testplan.delta import TS_EXTS, GraphDelta, find_span, tree_for
 from kb.testplan.diff import Hunk
 from kb.testplan.models import InventoryItem
 
 PERMISSION = re.compile(r"\b(role|roles|permission|permissions|isAdmin|can[A-Z]\w*|authori[sz]e\w*|guard\w*)\b")
 VALIDATES = re.compile(r"\b(args|input|req\.body|values|body)\.|\b(validate\w*|isValid\w*)\s*\(")
-QUERY_CALL = re.compile(r"^\w*Model\.(find\w*|create\w*|update\w*|delete\w*|aggregate|insert\w*|count\w*)$")
+_CRUD = r"(find\w*|create\w*|update\w*|upsert\w*|delete\w*|remove|save|insert\w*|count\w*|aggregate|groupBy)"
+QUERY_CALLS = (
+    re.compile(r"^(this\.)?\w*Model\." + _CRUD + "$"),                         # Mongoose models
+    re.compile(r"^(this\.)?\w*prisma\.\w+\." + _CRUD + "$", re.I),               # Prisma: prisma.task.findMany
+    re.compile(r"^(this\.)?\w*(Repository|Repo|repository|repo)\." + _CRUD + "$"),  # TypeORM / repository classes
+    re.compile(r"^getRepository\(.*\)\." + _CRUD + "$"),
+    re.compile(r"^[A-Z]\w*\.(find\w*|updateOne|updateMany|deleteOne|deleteMany|insertMany|countDocuments|aggregate)$"),
+)
+_BUILTINS = {"Object", "Array", "Promise", "Math", "JSON", "Reflect", "Number", "String", "Date", "Symbol", "Map", "Set"}
+JSX = {"jsx_element", "jsx_self_closing_element", "jsx_fragment"}
 ALIGN = 0.6
 
 
@@ -48,6 +57,18 @@ def _throws(stmt) -> bool:
         if s.type == "return_statement" and re.search(r"new \w*Error\(|\.status\(\s*[45]\d\d", _t(s)):
             return True
     return False
+
+
+def _is_jsx(n) -> bool:
+    while n is not None and n.type == "parenthesized_expression":
+        n = n.named_children[0] if n.named_children else None
+    return n is not None and n.type in JSX
+
+
+def _is_query(ftext: str) -> bool:
+    if ftext.split(".", 1)[0] in _BUILTINS:
+        return False
+    return any(p.match(ftext) for p in QUERY_CALLS)
 
 
 def _walk(node):
@@ -89,7 +110,25 @@ def extract_decisions(source: str, path: str, start: int, end: int) -> list[Deci
             out.append(Decision("branch", f"switch {_t(val) if val else ''}".strip(), cases + ["default"], line))
         elif n.type == "ternary_expression":
             cond = n.child_by_field_name("condition")
-            out.append(Decision("branch", _t(cond) if cond else _t(n), ["true", "false"], line))
+            text = _t(cond) if cond else _t(n)
+            jsx = _is_jsx(n.child_by_field_name("consequence")) or _is_jsx(n.child_by_field_name("alternative"))
+            if jsx and PERMISSION.search(text):  # {canEdit ? <Edit/> : <View/>}: a UI permission gate
+                out.append(Decision("permission", text, ["allowed", "denied"], line))
+            else:
+                out.append(Decision("branch", text, ["true", "false"], line))
+        elif n.type == "binary_expression" and _t(n.child_by_field_name("operator") or n) == "&&" \
+                and _is_jsx(n.child_by_field_name("right")):  # {isAdmin && <Delete/>}
+            left = _t(n.child_by_field_name("left"))
+            if PERMISSION.search(left):
+                out.append(Decision("permission", left, ["allowed", "denied"], line))
+            else:
+                out.append(Decision("branch", left, ["shown", "hidden"], line))
+        elif n.type == "catch_clause":
+            body = n.child_by_field_name("body")
+            first = _t(body.named_children[0]) if body is not None and body.named_children else ""
+            param = n.child_by_field_name("parameter")
+            text = f"catch ({_t(param) if param is not None else ''}) {first}".strip().rstrip(";")
+            out.append(Decision("error", text[:160], ["error"], line))
         elif n.type == "throw_statement" and n.start_byte not in skip_throws:
             out.append(Decision("error", _t(n).rstrip(";"), ["error"], line))
         elif n.type == "call_expression":
@@ -97,7 +136,7 @@ def extract_decisions(source: str, path: str, start: int, end: int) -> list[Deci
             ftext = _t(fn) if fn is not None else ""
             if re.search(r"\.status$", ftext) and re.match(r"\(\s*[45]\d\d", _t(n.child_by_field_name("arguments") or n)):
                 out.append(Decision("error", _t(n), ["error"], line))
-            elif QUERY_CALL.match(ftext):
+            elif _is_query(ftext):
                 out.append(Decision("query", _t(n), ["runs"], line))
         elif n.type == "pair":
             key = n.child_by_field_name("key")
@@ -109,6 +148,18 @@ def extract_decisions(source: str, path: str, start: int, end: int) -> list[Deci
     return out  # pre-order walk: an `if` is seen before the throw inside it, so skip_throws is always ready
 
 
+def _similar(a: str, b: str) -> float:
+    """Text similarity; a condition that was extended (`isAdmin` → `isAdmin || isOwner`) still contains the
+    old one, so containment counts as a match even when the ratio is low."""
+    if a == b:
+        return 1.0
+    r = difflib.SequenceMatcher(None, a, b).ratio()
+    short, long_ = sorted((a, b), key=len)
+    if len(short) >= 3 and re.search(r"(?<![\w.])" + re.escape(short) + r"(?![\w])", long_):
+        r = max(r, ALIGN)
+    return r
+
+
 def _align(base: list[Decision], head: list[Decision]):
     """Pairs (b, h) within the same kind by best text similarity; returns (pairs, base_only, head_only)."""
     pairs, used_b = [], set()
@@ -118,7 +169,7 @@ def _align(base: list[Decision], head: list[Decision]):
         for i, b in enumerate(base):
             if i in used_b or b.kind != h.kind:
                 continue
-            r = 1.0 if b.norm == h.norm else difflib.SequenceMatcher(None, b.norm, h.norm).ratio()
+            r = _similar(b.norm, h.norm)
             if r > score:
                 best, score = i, r
         if best is not None and score >= ALIGN:
@@ -154,13 +205,6 @@ def _read(cos: dict[str, Checkout], repo: str, file: str) -> str | None:
         return None
 
 
-def _span(source: str | None, path: str, name: str) -> tuple[int, int] | None:
-    if source is None:
-        return None
-    for n, a, b in symbol_spans(source, path):
-        if n == name:
-            return a, b
-    return None
 
 
 def inventory(base_cos: dict[str, Checkout], head_cos: dict[str, Checkout], delta: GraphDelta,
@@ -169,12 +213,12 @@ def inventory(base_cos: dict[str, Checkout], head_cos: dict[str, Checkout], delt
     targets: dict[tuple, list[int]] = {}
     for i, h in enumerate(hunks):
         owner = delta.hunk_owner.get(i, f"{h.repo}:{h.file}")
-        name = owner.split("#", 1)[1].split("@")[0] if "#" in owner else None
+        name = owner.split("#", 1)[1] if "#" in owner else None  # keeps "@line" to tell same-named methods apart
         targets.setdefault((h.repo, h.old_file, h.file, name), []).append(i)
     for nid in delta.nodes_removed:
         repo, rest = nid.split(":", 1)
         file, name = rest.split("#", 1)
-        targets.setdefault((repo, file, (renames or {}).get((repo, file), file), name.split("@")[0]), [])
+        targets.setdefault((repo, file, (renames or {}).get((repo, file), file), name), [])
 
     items: dict[str, InventoryItem] = {}
 
@@ -184,7 +228,8 @@ def inventory(base_cos: dict[str, Checkout], head_cos: dict[str, Checkout], delt
                                             lines=(d.line, d.line), function=fn or "", outcomes=d.outcomes,
                                             summary=_summary(kind, d, was, removed_kind), text=d.norm))
 
-    for (repo, bfile, hfile, name), idx in targets.items():
+    for (repo, bfile, hfile, full), idx in targets.items():
+        name = full.split("@")[0] if full else None
         bsrc, hsrc = _read(base_cos, repo, bfile), _read(head_cos, repo, hfile)
         ts_file = hfile.endswith(TS_EXTS) or bfile.endswith(TS_EXTS)
         if not ts_file:
@@ -196,7 +241,7 @@ def inventory(base_cos: dict[str, Checkout], head_cos: dict[str, Checkout], delt
                                                     summary=f"Code changed in {name}", text=name))
             continue
         if name:
-            hs, bs = _span(hsrc, hfile, name), _span(bsrc, bfile, name)
+            hs, bs = find_span(hsrc, hfile, full), find_span(bsrc, bfile, full)
             head_d = extract_decisions(hsrc, hfile, *hs) if hs and hsrc else []
             base_d = extract_decisions(bsrc, bfile, *bs) if bs and bsrc else []
         else:

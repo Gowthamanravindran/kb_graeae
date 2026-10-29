@@ -139,3 +139,52 @@ def test_branch_rows_count_test_plans(app):
     _pr(c, fx)
     row = next(r for r in c.get("/api/projects/mini/branches").json()["rows"] if r["branch"] == "production")
     assert row["local"]["testplans"] == 1
+
+
+def test_retry_refused_while_busy_leaves_the_stale_case_alone(app, monkeypatch):
+    c, fx, _ = app
+    pid = _pr(c, fx)
+    wait(c, c.post(f"/api/projects/mini/testplans/{pid}/generate", json={"counts": {"P0": 1}}).json()["job_id"])
+    from kb.packs.store import PackStore
+    from kb.testplan.store import PlanStore
+
+    written = next(s for s in c.get(f"/api/projects/mini/testplans/{pid}").json()["slots"] if s["status"] == "written")
+    home = fx.cfg_path.parent.parent / "home"
+    ps = PlanStore(PackStore(home))
+    ps.update_slots("mini", "production", pid, lambda ss: [setattr(s, "status", "stale") for s in ss if s.id == written["id"]])
+    gate = threading.Event()
+    import kb.testplan.graph_design as gd
+    real = gd.run_design
+    monkeypatch.setattr(gd, "run_design", lambda *a, **k: (gate.wait(10), real(*a, **k))[1])
+    first = c.post(f"/api/projects/mini/testplans/{pid}/generate", json={"counts": {"P1": 1}})
+    retry = c.post(f"/api/projects/mini/testplans/{pid}/slots/{written['id']}/retry")
+    gate.set()
+    assert first.status_code == 200 and retry.status_code == 409
+    wait(c, first.json()["job_id"])
+    slot = next(s for s in ps.load_slots("mini", "production", pid) if s.id == written["id"])
+    assert slot.status == "stale" and slot.case_id == written["case_id"]
+    assert next(x for x in ps.cases("mini", "production", pid) if x.id == written["case_id"]).status != "obsolete"
+
+
+def test_detail_does_not_list_every_plan(app, monkeypatch):
+    c, fx, _ = app
+    pid = _pr(c, fx)
+    from kb.testplan.store import PlanStore
+
+    def boom(self, project):
+        raise AssertionError("list_plans called for one plan")
+    monkeypatch.setattr(PlanStore, "list_plans", boom)
+    d = c.get(f"/api/projects/mini/testplans/{pid}").json()
+    assert d["summary"]["id"] == pid and d["summary"]["counts_by_priority"]["P0"] == 4
+
+
+def test_github_pr_lookup_route(app, monkeypatch):
+    c, *_ = app
+    from kb.testplan import github
+
+    monkeypatch.setattr(github, "_get", lambda url, token: {
+        "title": "Repeat end", "body": "", "base": {"ref": "develop", "repo": {"full_name": "a/b"}},
+        "head": {"ref": "x", "repo": {"full_name": "fork/b"}}})
+    r = c.get("/api/github/pr", params={"url": "https://github.com/a/b/pull/9"})
+    assert r.json() == {"title": "Repeat end", "base_ref": "develop", "head_ref": "pull/9/head"}
+    assert c.get("/api/github/pr", params={"url": "https://example.com/x"}).status_code == 400

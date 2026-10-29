@@ -89,3 +89,28 @@ test("open_plan_routes_to_board_or_impact", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Open board" }));
   expect(screen.getByTestId("probe")).toHaveTextContent("testplans|pr-1|board");
 });
+
+test("pr_link_fills_base_and_branch_from_github", async () => {
+  const a = api({ prInfo: vi.fn(async () => ({ title: "Repeat end", base_ref: "develop", head_ref: "pull/482/head" })) });
+  renderApp(<TestPlans />, a);
+  const base = await screen.findByLabelText("sop-backend base branch");
+  await userEvent.clear(base);
+  await userEvent.type(base, "master"); // as if kb.yaml's default had been pre-filled
+  const link = screen.getByLabelText("sop-backend PR link");
+  await userEvent.type(link, "https://github.com/acme/sop-backend/pull/482");
+  await userEvent.tab();
+  await waitFor(() => expect(screen.getByLabelText("sop-backend PR branch")).toHaveValue("pull/482/head"));
+  expect(a.prInfo).toHaveBeenCalledWith("https://github.com/acme/sop-backend/pull/482");
+  expect(screen.getByLabelText("sop-backend base branch")).toHaveValue("develop");
+  expect(screen.getByText(/Repeat end/)).toBeInTheDocument();
+});
+
+test("pr_link_lookup_failure_is_shown_and_keeps_fields", async () => {
+  const a = api({ prInfo: vi.fn(async () => { throw new Error("Add GITHUB_TOKEN to ~/.kb/kb.env, or pick the branches yourself"); }) });
+  renderApp(<TestPlans />, a);
+  await userEvent.type(await screen.findByLabelText("sop-web base branch"), "master");
+  await userEvent.type(screen.getByLabelText("sop-web PR link"), "https://github.com/acme/sop-web/pull/1");
+  await userEvent.tab();
+  expect(await screen.findByText(/Add GITHUB_TOKEN/)).toBeInTheDocument();
+  expect(screen.getByLabelText("sop-web base branch")).toHaveValue("master");
+});

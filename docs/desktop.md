@@ -74,7 +74,7 @@ a **Retry** button, and **Open logs** (`$KB_HOME/logs/`).
 4. Add a project: **Add a project…** → pick the SOP `kb.yaml` (`examples/sop.kb.yaml` with your paths, or your own).
 5. **Analyse a branch** → `main`. Watch the progress steps. The row ends as "Private · local only".
 6. **Open** → the Map shows the SOP modules in plain English. Toggle **Code names**, pick **Tasks**, then **Ask about Tasks**.
-7. Ask "How does scheduling work in Tasks?" with real Claude Code. Expect UI flow and Backend flow with citations, a diagram, and "n of m steps verified". Click a citation: it opens in your editor.
+7. Ask "How does scheduling work in Tasks?" with real Claude Code. Expect UI flow and Backend flow with citations, a diagram, and "n of m steps verified". Click a citation: it opens in your editor. A citation to a script or a file with no extension is shown in Finder rather than opened, so nothing runs.
 8. With the registry from `docs/registry-acceptance.md` Run 2:
    - sign in from the sidebar (**Sign in to registry**);
    - **Push to registry**, then **Share to sop@main** on the answer;

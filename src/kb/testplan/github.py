@@ -50,6 +50,12 @@ def pr_info(url: str) -> PullRequest:
     except Exception as e:  # noqa: BLE001 — network
         raise KbError(f"could not reach GitHub for {url}: {e}") from e
     body = d.get("body") or ""
+    base, head = d.get("base") or {}, d.get("head") or {}
+    base_repo = (base.get("repo") or {}).get("full_name")
+    head_repo = (head.get("repo") or {}).get("full_name")
+    # a fork's branch isn't in the base repo (and a deleted fork has no repo at all): GitHub keeps every PR's
+    # commits under refs/pull/<n>/head of the base repo
+    fork = "repo" in head and (head_repo is None or (base_repo is not None and head_repo != base_repo))
     return PullRequest(url=url, title=d.get("title") or "", body=body,
                        issues=sorted(set(re.findall(r"#\d+", body)), key=lambda s: int(s[1:])),
-                       base_ref=(d.get("base") or {}).get("ref", ""), head_ref=(d.get("head") or {}).get("ref", ""))
+                       base_ref=base.get("ref", ""), head_ref=f"pull/{num}/head" if fork else head.get("ref", ""))

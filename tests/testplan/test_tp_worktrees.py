@@ -93,3 +93,41 @@ def test_git_source_fetches_once_per_minute(tmp_path, monkeypatch):
     worktrees.git_source(repo, tmp_path / "work")
     worktrees.git_source(repo, tmp_path / "work")
     assert [a for a in calls if a[0] == "fetch"] == []
+
+
+def _fork_pr(tmp_path, fx):
+    """GitHub stand-in: the PR's commits live only under refs/pull/7/head (a fork's branch)."""
+    gh = tmp_path / "github-be.git"
+    git(tmp_path, "clone", "-q", "--bare", str(fx.be), str(gh))
+    fork = tmp_path / "fork"
+    git(tmp_path, "clone", "-q", str(gh), str(fork))
+    git(fork, "config", "user.email", "f@x"), git(fork, "config", "user.name", "f")
+    sha = _commit_file(fork, "fork.ts", "export const fork = 1;\n", "fork change")
+    git(fork, "push", "-q", str(gh), f"HEAD:refs/pull/7/head")
+    return gh, sha
+
+
+def test_fork_pr_ref_for_a_local_repo(tmp_path):
+    from kb.config import RepoConfig
+    from kb.testplan.worktrees import diff_source
+
+    fx = make_pr_fixture(tmp_path)
+    gh, sha = _fork_pr(tmp_path, fx)
+    user = tmp_path / "user-be"
+    git(tmp_path, "clone", "-q", str(gh), str(user))
+    repo = RepoConfig(name="mini-be", role="backend", local_path=user)
+    co = worktree_at(repo, "pull/7/head", tmp_path / "work")
+    assert co.commit == sha and (co.root / "fork.ts").exists()
+    assert "refs/pull" not in git(user, "for-each-ref")  # the user's repo is untouched
+    assert worktree_at(repo, sha, tmp_path / "work").commit == sha  # a later design run asks by commit
+    src = diff_source(repo, tmp_path / "work", sha)
+    assert git(src, "cat-file", "-t", sha) == "commit"
+
+
+def test_fork_pr_ref_for_a_url_repo(tmp_path):
+    from kb.config import RepoConfig
+
+    fx = make_pr_fixture(tmp_path)
+    gh, sha = _fork_pr(tmp_path, fx)
+    repo = RepoConfig(name="mini-be", role="backend", url=str(gh))
+    assert worktree_at(repo, "pull/7/head", tmp_path / "work").commit == sha

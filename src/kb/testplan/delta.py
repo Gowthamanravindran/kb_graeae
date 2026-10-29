@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -46,7 +49,40 @@ def symbol_spans(source: str, path: str) -> list[tuple[str, int, int]]:
             names.append(n.text.decode())
         for name in names:
             out.append((name, node.start_point[0] + 1, node.end_point[0] + 1))
+        if decl.type in ("class_declaration", "abstract_class_declaration"):
+            out += _method_spans(decl)
     return out
+
+
+_FN_VALUES = {"arrow_function", "function_expression", "function"}
+
+
+def _method_spans(cls) -> list[tuple[str, int, int]]:
+    """A class's methods as `.name` — the id Graphify gives them — so a change inside one method is owned
+    by that method, not by the whole class."""
+    body = cls.child_by_field_name("body")
+    out = []
+    for m in (body.named_children if body is not None else []):
+        name = m.child_by_field_name("name") or m.child_by_field_name("property")
+        if name is None:
+            continue
+        if m.type == "method_definition" or (
+                m.type in ("public_field_definition", "field_definition")
+                and (v := m.child_by_field_name("value")) is not None and v.type in _FN_VALUES):
+            out.append((f".{name.text.decode()}", m.start_point[0] + 1, m.end_point[0] + 1))
+    return out
+
+
+def find_span(source: str | None, path: str, name: str) -> tuple[int, int] | None:
+    """The span of symbol `name` (`f`, `.method`, or `.method@<line>` when a file has two of the same name)."""
+    if source is None:
+        return None
+    bare, _, at = name.partition("@")
+    hits = [(a, b) for n, a, b in symbol_spans(source, path) if n == bare]
+    if at.isdigit():
+        exact = [h for h in hits if h[0] == int(at)]
+        hits = exact or hits
+    return hits[0] if hits else None
 
 
 @dataclass
@@ -64,14 +100,26 @@ def head_graph(cfg, checkouts: dict[str, Checkout], work: Path) -> CodeGraph:
     """The PR's code graph (Graphify + linkers, no LLM), cached by the head commits."""
     from kb.analyze import build_graph
 
-    key = commits_key({k: v.commit for k, v in checkouts.items()})
+    key = f"{commits_key({k: v.commit for k, v in checkouts.items()})}-{config_key(cfg)}"
     cache = Path(work) / "head_graphs" / f"{key}.json"
     if cache.exists():
+        os.utime(cache)  # recently used: kept by prune_work
         return CodeGraph.from_json(json.loads(cache.read_text()))
-    g = build_graph(cfg, checkouts, Path(work) / "head_build" / key).merged
+    build = Path(work) / "head_build" / key
+    try:
+        g = build_graph(cfg, checkouts, build).merged
+    finally:
+        shutil.rmtree(build, ignore_errors=True)
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(g.to_json()))
     return g
+
+
+def config_key(cfg) -> str:
+    """What in kb.yaml changes the graph: ignore patterns, linkers, and each repo's sub-path."""
+    data = {"ignore": list(cfg.ignore), "linkers": [lk.model_dump(mode="json") for lk in cfg.linkers],
+            "repos": sorted((r.name, r.path or "") for r in cfg.repos)}
+    return hashlib.sha1(json.dumps(data, sort_keys=True).encode()).hexdigest()[:8]
 
 
 def _read(checkouts: dict[str, Checkout], repo: str, file: str) -> str | None:

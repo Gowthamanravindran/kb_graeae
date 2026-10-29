@@ -92,7 +92,8 @@ ipcMain.handle("kb:open-external", (_e, url: string) => {
   if (typeof url === "string" && /^https?:\/\//.test(url)) return shell.openExternal(url);
 });
 ipcMain.handle("kb:open-citation", (_e, c: CitationRef) =>
-  openCitation(engine, c, { fetch: globalThis.fetch, openPath: shell.openPath, openExternal: shell.openExternal, editor: process.env.KB_EDITOR }));
+  openCitation(engine, c, { fetch: globalThis.fetch, openPath: shell.openPath, openExternal: shell.openExternal,
+    showItemInFolder: shell.showItemInFolder, platform: process.platform, editor: process.env.KB_EDITOR }));
 ipcMain.handle("kb:reveal-config", (_e, project: string) =>
   revealConfig(engine, String(project), { fetch: globalThis.fetch, showItemInFolder: shell.showItemInFolder }));
 ipcMain.handle("kb:save-file", async (_e, defaultName: string, data: Uint8Array) => {

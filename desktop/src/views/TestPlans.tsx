@@ -42,6 +42,20 @@ function PrForm({ rows, onStarted }: { rows: BranchRow[]; onStarted(jobId: strin
   const [base, setBase] = useState<Record<string, string>>({});
   const [head, setHead] = useState<Record<string, string>>({});
   const [links, setLinks] = useState<Record<string, string>>({});
+  const [linkNote, setLinkNote] = useState<Record<string, { title?: string; error?: string }>>({});
+  const lookUp = async (repo: string) => {
+    const url = (links[repo] ?? "").trim();
+    if (!url) return setLinkNote((n) => ({ ...n, [repo]: {} }));
+    try {
+      // the PR's own base and branch (a fork's branch is pull/<n>/head) replace what was filled in
+      const pr = await api.prInfo(url);
+      if (pr.base_ref) setBase((b) => ({ ...b, [repo]: pr.base_ref }));
+      if (pr.head_ref) setHead((h) => ({ ...h, [repo]: pr.head_ref }));
+      setLinkNote((n) => ({ ...n, [repo]: { title: pr.title } }));
+    } catch (e) {
+      setLinkNote((n) => ({ ...n, [repo]: { error: msg(e) } }));
+    }
+  };
   const [error, setError] = useState<string | null>(null);
   const [analysing, setAnalysing] = useState(false);
   useEffect(() => {
@@ -101,7 +115,9 @@ function PrForm({ rows, onStarted }: { rows: BranchRow[]; onStarted(jobId: strin
                       <Input aria-label={`${r.name} PR branch`} value={head[r.name] ?? ""} placeholder="No changes"
                         onChange={(e) => setHead((h) => ({ ...h, [r.name]: e.target.value }))} />
                       <Input aria-label={`${r.name} PR link`} value={links[r.name] ?? ""} placeholder="GitHub PR link (optional)" className="text-xs"
-                        onChange={(e) => setLinks((l) => ({ ...l, [r.name]: e.target.value }))} />
+                        onChange={(e) => setLinks((l) => ({ ...l, [r.name]: e.target.value }))} onBlur={() => void lookUp(r.name)} />
+                      {linkNote[r.name]?.title && <div className="text-xs text-muted">PR: {linkNote[r.name].title}</div>}
+                      {linkNote[r.name]?.error && <div className="text-xs text-warn">{linkNote[r.name].error}</div>}
                     </div>
                   </td>
                 </tr>

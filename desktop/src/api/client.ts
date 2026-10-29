@@ -31,6 +31,7 @@ export function createClient({ baseUrl, token }: { baseUrl: string; token: strin
     login: (registry: string, token: string) => call<{ email: string }>("POST", "/api/login", { registry, token }),
     logout: (registry: string) => call<{ forgotten: boolean }>("POST", "/api/logout", { registry }),
     settings: () => call<SettingsView>("GET", "/api/settings"),
+    prInfo: (url: string) => call<{ title: string; base_ref: string; head_ref: string }>("GET", `/api/github/pr?url=${encodeURIComponent(url)}`),
     testplans: (p: string, kind?: "pr" | "scenario") =>
       call<PlanSummary[]>("GET", `/api/projects/${encodeURIComponent(p)}/testplans${kind ? `?kind=${kind}` : ""}`),
     newPrPlan: (p: string, body: { base: Record<string, string>; head: Record<string, string | null>; pr_links: Record<string, string> }) =>

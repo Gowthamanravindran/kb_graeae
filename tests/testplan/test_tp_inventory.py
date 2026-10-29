@@ -59,3 +59,57 @@ def test_unknown_language_gives_code_item(tmp_path):
     d = GraphDelta(hunk_owner={0: "r:x.py#f"})
     items = inventory({"r": Checkout("r", tmp_path / "b", "1")}, {"r": Checkout("r", tmp_path / "h", "2")}, d, [h])
     assert [(i.kind, i.function, i.outcomes) for i in items] == [("code", "f", ["changed"])]
+
+
+# ---- deferred minor 3: JSX gates, try/catch, ORM queries, class methods
+
+def test_jsx_permission_gate_is_a_permission_check():
+    src = ("export function Toolbar({ user }) {\n  return (\n    <div>\n      {user.isAdmin && <DeleteButton />}\n"
+           "      {canEdit ? <EditButton /> : <ViewBadge />}\n      {open && <Menu />}\n    </div>\n  );\n}\n")
+    d = extract_decisions(src, "Toolbar.tsx", 1, 9)
+    kinds = [(x.kind, x.text, x.outcomes) for x in d]
+    assert ("permission", "user.isAdmin", ["allowed", "denied"]) in kinds
+    assert ("permission", "canEdit", ["allowed", "denied"]) in kinds
+    assert ("branch", "open", ["shown", "hidden"]) in kinds
+
+
+def test_try_catch_is_an_error_point():
+    src = "async function save(t) {\n  try {\n    await api.save(t);\n  } catch (err) {\n    toast(err.message);\n  }\n}\n"
+    d = extract_decisions(src, "a.ts", 1, 7)
+    assert [x.kind for x in d] == ["error"]
+    assert d[0].outcomes == ["error"] and "catch" in d[0].text and "toast" in d[0].text
+
+
+def test_orm_queries_are_query_points():
+    src = ("async function f(id) {\n  await this.prisma.task.findMany({ where: { id } });\n"
+           "  await prisma.user.update({ where: { id } });\n  await taskRepository.save(x);\n"
+           "  await this.userRepo.findOne(id);\n  await Task.findOneAndUpdate({ id }, {});\n"
+           "  Object.create(null);\n  Promise.all([]);\n}\n")
+    d = extract_decisions(src, "a.ts", 1, 9)
+    assert [x.kind for x in d] == ["query"] * 5
+
+
+def test_class_methods_have_their_own_spans():
+    from kb.testplan.delta import symbol_spans
+
+    src = ("export class TaskService {\n  create(i) {\n    return 1;\n  }\n  remove = (id) => {\n    return 2;\n  };\n}\n"
+           "export function plain() { return 3; }\n")
+    spans = symbol_spans(src, "svc.ts")
+    assert ("TaskService", 1, 8) in spans and (".create", 2, 4) in spans and (".remove", 5, 7) in spans
+    assert ("plain", 9, 9) in spans
+
+
+def test_hunk_in_method_inventories_only_that_method(tmp_path):
+    from kb.ingest.checkout import Checkout
+    from kb.testplan.delta import GraphDelta
+
+    base = ("export class S {\n  a(x) {\n    if (x.flag) {\n      go();\n    }\n  }\n  b(y) {\n    if (y.on) {\n      stop();\n    }\n  }\n}\n")
+    head = base.replace("x.flag", "x.flag && x.ready")
+    for d, s in (("b", base), ("h", head)):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "s.ts").write_text(s)
+    h = Hunk(repo="r", file="s.ts", old_file="s.ts", old_start=3, old_len=1, new_start=3, new_len=1,
+             added=["    if (x.flag && x.ready) {"], removed=["    if (x.flag) {"])
+    delta = GraphDelta(hunk_owner={0: "r:s.ts#.a"})
+    items = inventory({"r": Checkout("r", tmp_path / "b", "1")}, {"r": Checkout("r", tmp_path / "h", "2")}, delta, [h])
+    assert [(i.kind, i.change, i.text) for i in items] == [("branch", "changed", "x.flag && x.ready")]

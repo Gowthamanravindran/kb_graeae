@@ -48,6 +48,40 @@ def test_head_graph_cached(tmp_path):
     assert list((tmp_path / "work" / "head_graphs").glob("*.json"))
 
 
+def test_head_graph_cache_follows_kb_yaml(tmp_path):
+    cfg, base, head, bg, hg, hunks = _graphs(tmp_path)
+    assert any(n.file.startswith("src/queue/") for n in hg.nodes())
+    narrowed = cfg.model_copy(update={"ignore": [*cfg.ignore, "src/queue/**"]})
+    again = head_graph(narrowed, head, tmp_path / "work")
+    assert not any(n.file.startswith("src/queue/") for n in again.nodes())  # not the cached graph
+    assert len(list((tmp_path / "work" / "head_graphs").glob("*.json"))) == 2
+    assert not list((tmp_path / "work" / "head_build").glob("*"))  # build scratch is removed
+
+
+def test_prune_work_drops_old_caches_and_worktrees(tmp_path):
+    import os
+    import time
+
+    from fixture_repos import git
+    from kb.testplan.worktrees import prune_work
+
+    cfg, base, head, bg, hg, hunks = _graphs(tmp_path)
+    work = tmp_path / "work"
+    old_wt = head["mini-be"].root
+    keep_wt = base["mini-be"].root
+    cache = next((work / "head_graphs").glob("*.json"))
+    month_ago = time.time() - 30 * 86400
+    for p in (cache, old_wt):
+        os.utime(p, (month_ago, month_ago))
+    removed = prune_work(work, max_age_days=14)
+    assert removed >= 2
+    assert not cache.exists() and not old_wt.exists() and keep_wt.exists()
+    mirror = work / "mirrors" / "mini-be"
+    assert str(old_wt) not in git(mirror, "worktree", "list")
+    # used again later: recreated without complaint
+    assert worktree_at(cfg.repo("mini-be"), head["mini-be"].commit, work).root.exists()
+
+
 def _move(fx, edit=False):
     from fixture_repos import RESOLVERS, git
 

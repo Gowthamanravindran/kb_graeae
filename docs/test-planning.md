@@ -17,7 +17,8 @@ names the affected flows of a PR.
 1. **Pick the branches.** Fill one row per repo.
    - **Base** is the production branch of that repo (for example `master` for the web app and `develop` for the backend). Repos can differ.
    - **PR branch** is the branch to test. Leave it empty when the PR doesn't change that repo.
-   - Optionally paste the **GitHub PR link**: it fills the branches and adds the PR's title and description as context. Private repos need `GITHUB_TOKEN` (in **Settings**, or in `~/.kb/kb.env`).
+   - Optionally paste the **GitHub PR link**. When you leave the field, KB fills that repo's base and PR branch from the PR (replacing a pre-filled `default_branch`) and later adds the PR's title and description as context. Private repos need `GITHUB_TOKEN` (in **Settings**, or in `~/.kb/kb.env`).
+   - A PR from a **fork** is read as `pull/<number>/head`. KB fetches it into its own copy of the repo, from your repo's `origin` with your usual git sign-in, and never into your `.git`.
 2. **The base must be analysed.** KB compares the PR with an analysis of exactly those base branches. If there isn't one, the form says **Analyse … first** and offers the analysis. Per-repo branches are analysed under a name such as `production`.
 3. **Find what changed** builds the **Impact** screen, with no Claude calls apart from naming the flows:
    - **Changed decision points:** each new or changed branch, validation, permission check, error, field, route, job or data query in the diff, plus behaviour the PR removed.
@@ -43,12 +44,28 @@ names the affected flows of a PR.
 | P2 | validations (valid and invalid) and errors |
 | P3 | regression of unchanged steps, and effects on the other repo or on background jobs |
 
+### What counts as a decision point
+
+The detector covers:
+- `if` / `switch` / ternaries;
+- permission checks, including JSX gates such as `{isAdmin && <Delete/>}` and `{canEdit ? <Edit/> : <View/>}`;
+- validations;
+- `throw`, 4xx/5xx responses and `catch` blocks;
+- fields sent in GraphQL `variables`;
+- data queries: Mongoose models, Prisma (`prisma.task.findMany`), TypeORM and repository classes (`taskRepository.save`).
+
+A change inside a class method is credited to that method, not the whole class.
+
 ### When the PR gets new commits
 
 Run **Find what changed** again with the same branches; it updates the same plan:
 - **Unchanged code:** cases whose code didn't change stay as they are.
 - **Changed code:** cases whose code changed are marked **stale** and can be regenerated.
+- **Edited decision points:** a condition that was changed rather than removed (`isAdmin` → `isAdmin || isOwner`) keeps its cases, marked stale.
+- **Newly touched code:** a function the PR changes for the first time marks the main-path case of every flow through it stale.
 - **Removed code:** cases for decision points that disappeared are kept but marked obsolete.
+
+If one batch of cases fails (Claude times out, say), the cases from the other batches are saved and only that batch's slots show as failed.
 
 ## Test Scenarios in a Branch
 
@@ -58,7 +75,8 @@ You can start a scenario plan in two ways:
 
 KB finds or traces the flow as Ask does, then lists every decision point in the code it passes through.
 You see the planned cases per priority before choosing how many to write. Regression isn't a category
-here, because nothing is being compared.
+here, because nothing is being compared. Planning the same scenario again later keeps the cases already
+written: if their code changed they are marked stale, and if their decision point is gone they are marked obsolete.
 
 ## CSV
 
@@ -81,7 +99,11 @@ kb testplan scenario kb.yaml --branch production "Admin schedules a weekly task"
 kb analyze kb.yaml --branch sop-web=master --branch sop-backend=develop --label production
 ```
 
-`default_branch` on a repo in `kb.yaml` fills its base automatically.
+`default_branch` on a repo in `kb.yaml` fills its base when neither `--base` nor a PR link gives one.
+
+KB keeps the PR's code graphs and checkouts under `~/.kb/work/<project>/`. Anything unused for 14 days is
+deleted when the next PR plan starts and rebuilt if needed. A change to `ignore`, `linkers` or a repo's `path` in
+`kb.yaml` builds a fresh graph, not the cached one.
 
 ## Checking it on your Mac
 
