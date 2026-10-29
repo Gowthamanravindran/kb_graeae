@@ -57,7 +57,7 @@ dev = [
     "uvicorn>=0.54.0",
 ]
 [tool.pytest.ini_options]
-pythonpath = ["tests", "tests/registry", "tests/sync"]
+pythonpath = ["tests", "tests/registry", "tests/sync", "tests/serve", "tests/testplan"]
 testpaths = ["tests"]  # build output (desktop/release, dist) bundles third-party tests
 
 [tool.uv.build-backend]
