@@ -366,6 +366,159 @@ def serve(
         os._exit(0)  # don't wait for running jobs: nobody is left to read their results
 
 
+testplan_app = typer.Typer(help="Test plans: cases for a pull request, or for a scenario on a branch.")
+app.add_typer(testplan_app, name="testplan")
+
+
+def _pairs(values: list[str] | None, what: str) -> dict[str, str]:
+    out = {}
+    for v in values or []:
+        if "=" not in v:
+            raise KbError(f"{what} must be repo=value, got {v!r}")
+        k, val = v.split("=", 1)
+        out[k.strip()] = val.strip()
+    return out
+
+
+def _plan_label(store, project: str, plan_id: str) -> str:
+    from kb.testplan.store import PlanStore
+
+    label = PlanStore(store).find(project, plan_id)
+    if label is None:
+        raise KbError(f"no test plan {plan_id} in {project}")
+    return label
+
+
+def _print_counts(slots) -> None:
+    from collections import Counter
+
+    c = Counter(s.priority for s in slots if s.status in ("planned", "failed"))
+    typer.echo("  planned: " + "  ".join(f"{p} {c.get(p, 0)}" for p in ("P0", "P1", "P2", "P3")))
+
+
+@testplan_app.command("pr")
+@handle_errors
+def testplan_pr(
+    config: Path = typer.Argument(..., help="Path to kb.yaml"),
+    base: list[str] = typer.Option(None, "--base", help="repo=branch (default: the repo's default_branch)"),
+    head: list[str] = typer.Option(None, "--head", help="repo=branch for each repo the PR changes"),
+    pr: list[str] = typer.Option(None, "--pr", help="repo=GitHub pull request link"),
+) -> None:
+    """Find what a pull request changed and plan its test cases (no Claude calls except naming flows)."""
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+    from kb.testplan.graph_impact import ChangeSetRequest, run_impact
+    from kb.testplan.store import PlanStore
+    from kb.tracing import make_tracer
+
+    cfg = load_config(config)
+    store = PackStore()
+    req = ChangeSetRequest(project=cfg.project, base=_pairs(base, "--base"), head=_pairs(head, "--head"),
+                           pr_links=_pairs(pr, "--pr"))
+    rep = run_impact(cfg, req, store, get_provider(), make_tracer(cfg), author=_author())
+    label = _plan_label(store, cfg.project, rep.change_set_id)
+    typer.echo(f"plan {rep.change_set_id}")
+    typer.echo(f"  {len(rep.inventory)} decision points, {len(rep.flows)} flows affected")
+    for f in rep.flows:
+        typer.echo(f"  - {f.name}  (risk {f.risk:g}: {', '.join(f.risk_reasons) or 'low'})")
+    _print_counts(PlanStore(store).load_slots(cfg.project, label, rep.change_set_id))
+    if rep.needs_full_reanalysis:
+        typer.echo(f"  note: {rep.full_reanalysis_reason}")
+
+
+@testplan_app.command("scenario")
+@handle_errors
+def testplan_scenario(
+    config: Path = typer.Argument(..., help="Path to kb.yaml"),
+    text: str = typer.Argument(None, help="The scenario, e.g. 'Admin schedules a weekly task'"),
+    branch: str = typer.Option(..., "--branch", "-b", help="Analysed branch (label)"),
+    answer: str = typer.Option(None, "--from-answer", help="Plan from a saved answer id instead"),
+) -> None:
+    """Plan test cases for how one flow works today on a branch."""
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+    from kb.testplan.scenario import plan_scenario
+    from kb.tracing import make_tracer
+
+    cfg = load_config(config)
+    sp = plan_scenario(cfg, branch, PackStore(), get_provider(), make_tracer(cfg), text=text, answer_id=answer,
+                       author=_author())
+    typer.echo(f"plan {sp.plan_id}")
+    _print_counts(sp.slots)
+
+
+@testplan_app.command("generate")
+@handle_errors
+def testplan_generate(
+    config: Path = typer.Argument(..., help="Path to kb.yaml"),
+    plan_id: str = typer.Argument(...),
+    p0: int = typer.Option(0, "--p0"), p1: int = typer.Option(0, "--p1"),
+    p2: int = typer.Option(0, "--p2"), p3: int = typer.Option(0, "--p3"),
+    per_flow: int = typer.Option(None, "--per-flow", help="At most this many cases per flow"),
+) -> None:
+    """Write the next cases, highest priority first."""
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+    from kb.testplan.graph_design import run_design
+    from kb.testplan.store import PlanStore
+    from kb.tracing import make_tracer
+
+    cfg = load_config(config)
+    store = PackStore()
+    label = _plan_label(store, cfg.project, plan_id)
+    kind = PlanStore(store).load_change_set(cfg.project, label, plan_id).kind
+    res = run_design(cfg, plan_id, label, store, get_provider(), make_tracer(cfg), "scenario" if kind == "scenario" else "more",
+                     {"P0": p0, "P1": p1, "P2": p2, "P3": p3}, per_flow, author=_author(),
+                     progress=lambda text, frac: typer.echo(f"  {text}", err=True))
+    typer.echo(f"wrote {res.written} cases" + (f", {res.failed} failed" if res.failed else "")
+               + (f", {res.extras} suggested extras" if res.extras else ""))
+
+
+@testplan_app.command("status")
+@handle_errors
+def testplan_status(config: Path = typer.Argument(...), plan_id: str = typer.Argument(...)) -> None:
+    """Counts per status and priority, and decision points without a case."""
+    from collections import Counter
+
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+    from kb.testplan.graph_design import coverage_for
+    from kb.testplan.store import PlanStore
+
+    cfg = load_config(config)
+    store = PackStore()
+    label = _plan_label(store, cfg.project, plan_id)
+    ps = PlanStore(store)
+    slots = ps.load_slots(cfg.project, label, plan_id)
+    st = Counter(s.status for s in slots)
+    typer.echo("  " + "  ".join(f"{k} {v}" for k, v in sorted(st.items())))
+    _print_counts(slots)
+    cov = coverage_for(ps, cfg.project, label, plan_id)
+    gaps = Counter(cov.items.values())
+    typer.echo("  decision points: " + "  ".join(f"{k} {v}" for k, v in sorted(gaps.items())))
+
+
+@testplan_app.command("export")
+@handle_errors
+def testplan_export(
+    config: Path = typer.Argument(...), plan_id: str = typer.Argument(...),
+    out: Path = typer.Option(..., "-o", "--out", help="CSV file to write"),
+    priority: list[str] = typer.Option(None, "--priority", help="Only these priorities (repeatable)"),
+) -> None:
+    """Write the plan's cases as CSV (opens in Excel)."""
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+    from kb.testplan.export import export_csv
+    from kb.testplan.store import PlanStore
+
+    cfg = load_config(config)
+    store = PackStore()
+    label = _plan_label(store, cfg.project, plan_id)
+    data = export_csv(PlanStore(store), cfg.project, label, plan_id, priorities=priority or None)
+    Path(out).write_bytes(data)
+    typer.echo(f"wrote {out}")
+
+
 def main() -> None:
     app()
 
