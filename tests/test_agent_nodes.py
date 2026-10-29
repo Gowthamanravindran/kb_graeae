@@ -237,3 +237,13 @@ def test_reuse_when_module_summary_outranks_the_saved_flow(tmp_path):
     build_index(store.pack_dir("mini", "main"), store.load("mini", "main"))
     out = nodes.understand({"question": q}, make_deps(store, cos, FakeProvider()))
     assert out["reused_flow_id"] == "f1"
+
+
+def test_trace_includes_extra_context(tmp_path):
+    store, cos = build_pack(tmp_path)
+    p = FakeProvider([trace_reply(GOOD_STEPS)])
+    d = make_deps(store, cos, p)
+    d.extra["trace_context"] = "CHANGED CODE\n+ if (!context.user.isAdmin) {"
+    nodes.trace({"question": "How does: Admin creates a task", "module_ids": ["tasks"], "shortlist": []}, d)
+    prompt = p.requests[0].prompt
+    assert "CHANGED CODE" in prompt and prompt.index("CHANGED CODE") < prompt.index("Return 3-12 steps")

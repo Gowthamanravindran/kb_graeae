@@ -216,6 +216,8 @@ def trace(state: AgentState, deps) -> dict:
             parts.append(f"This is a follow-up to an earlier answer.\nEarlier question: {qa.question}\nEarlier answer: {qa.answer}")
     if deps.context:
         parts.append("Glossary:\n" + deps.context[:6000])
+    if deps.extra.get("trace_context"):  # set by test planning: the PR's changed code and decision points
+        parts.append(deps.extra["trace_context"])
     parts.append("Return 3-12 steps in the order they happen, UI steps first. Every step must cite the repo, "
                  "the file path relative to that repo's root, and the line range you read. "
                  "For the step where the app sends a request to the server, cite the operation's definition "
