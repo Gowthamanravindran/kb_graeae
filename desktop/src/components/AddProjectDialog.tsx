@@ -7,6 +7,7 @@ import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
+import { Spinner } from "./ui/spinner";
 
 const msg = (e: unknown) => (e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e));
 const select = "h-9 w-full rounded-lg border border-line bg-surface px-2 text-sm";
@@ -141,7 +142,7 @@ export function AddProjectDialog({ open, onOpenChange }: { open: boolean; onOpen
                 <Button type="button" variant="ghost" size="sm" onClick={() => setSources((xs) => [...xs, ""])} disabled={reading}>Add another repo</Button>
               </div>
             </div>
-            {reading && <p className="text-sm text-muted" aria-live="polite">{job?.step || "Reading the repos…"}</p>}
+            {reading && <p className="flex items-center gap-2 text-sm text-muted" aria-live="polite"><Spinner />{job?.step || "Reading the repos…"}</p>}
             {error && <p role="alert" className="rounded-lg bg-warn-soft p-3 text-sm text-warn">{error}</p>}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <Button type="button" variant="ghost" size="sm" onClick={() => void useYaml()}>Use an existing kb.yaml…</Button>

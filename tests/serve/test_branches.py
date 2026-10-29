@@ -103,3 +103,11 @@ def test_analyze_accepts_branch_map(tmp_path, serve):
     assert c.get(f"/api/jobs/{job}").json()["state"] == "done", c.get(f"/api/jobs/{job}").json()["error"]
     row = next(r for r in c.get("/api/projects/mini3/branches").json()["rows"] if r["branch"] == "production")
     assert row["local"]["branches"] == {"mini-fe": "master", "mini-be": "develop"}
+
+
+def test_running_first_analysis_has_a_row(tmp_path):
+    from kb.packs.store import PackStore
+    from kb.serve.views import branch_rows
+
+    rows = branch_rows("shop", PackStore(tmp_path), None, {"production": "j1"})
+    assert rows == [{"branch": "production", "local": None, "remote": None, "state": "in-progress", "job_id": "j1"}]

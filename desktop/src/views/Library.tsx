@@ -8,6 +8,7 @@ import { Card } from "../components/ui/card";
 import { Checkbox } from "../components/ui/checkbox";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
+import { Spinner } from "../components/ui/spinner";
 import { AddProjectDialog } from "../components/AddProjectDialog";
 import { LoginDialog } from "../components/LoginDialog";
 import { hostOf } from "../lib";
@@ -30,19 +31,24 @@ function ago(iso: string | null): string {
   return `${Math.floor(d / 7)} weeks ago`;
 }
 
-function Progress({ jobId, onDone }: { jobId: string; onDone(): void }) {
+function Progress({ jobId, onDone }: { jobId: string; onDone(error: string | null): void }) {
   const { api } = useApp();
   const { job, done, failed } = useJob(api, jobId);
   useEffect(() => {
-    if (done || failed) onDone();
+    if (done || failed) onDone(failed ? job?.error ?? "The job failed." : null);
   }, [done, failed]); // eslint-disable-line react-hooks/exhaustive-deps
   if (failed) return <p className="text-xs text-warn">{job?.error}</p>;
+  const pct = Math.round((job?.progress ?? 0) * 100);
   return (
     <div>
-      <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((job?.progress ?? 0) * 100)} className="h-2 max-w-[260px] overflow-hidden rounded bg-priv-soft">
-        <div className="h-2 bg-accent" style={{ width: `${Math.round((job?.progress ?? 0.05) * 100)}%` }} />
+      <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} className="h-2 max-w-[260px] overflow-hidden rounded bg-priv-soft">
+        {/* early steps (cloning, checking out) report little progress: pulse so it never looks stuck */}
+        <div className={`h-2 bg-accent ${pct < 10 ? "animate-pulse" : ""}`} style={{ width: `${Math.max(pct, 8)}%` }} />
       </div>
-      <div className="mt-1.5 text-xs text-muted">{job?.step || "Starting…"}</div>
+      <div className="mt-1.5 flex items-center gap-2 text-xs text-muted">
+        <Spinner />
+        <span>{job?.step || "Starting…"}</span>
+      </div>
     </div>
   );
 }
@@ -57,7 +63,17 @@ function AnalyseDialog({ open, onOpenChange, onStart, repos }: {
   const [label, setLabel] = useState("");
   const [map, setMap] = useState<Record<string, string>>({});
   useEffect(() => {
-    if (open) setMap(Object.fromEntries(repos.map((r) => [r.name, r.default_branch ?? ""])));
+    if (!open) return;
+    setMap(Object.fromEntries(repos.map((r) => [r.name, r.default_branch ?? ""])));
+    // start from the production branches in kb.yaml: one shared branch, or one per repo named "production"
+    const defaults = repos.map((r) => r.default_branch ?? "").filter(Boolean);
+    const distinct = new Set(defaults);
+    if (repos.length && defaults.length === repos.length && distinct.size > 1) {
+      setPerRepo(true);
+      setLabel((l) => l || "production");
+    } else if (distinct.size === 1) {
+      setBranch((b) => b || [...distinct][0]);
+    }
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
   const ready = perRepo ? !!label.trim() && repos.every((r) => (map[r.name] ?? "").trim()) : !!branch.trim();
   const submit = () => {
@@ -115,6 +131,7 @@ export function Library() {
   const [analysing, setAnalysing] = useState(false);
   const [login, setLogin] = useState(false);
   const [dismissed, setDismissed] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
   const load = useCallback(async () => {
     if (!project) return;
     try {
@@ -129,17 +146,23 @@ export function Library() {
     try {
       const { job_id } = await fn();
       setJobs((j) => ({ ...j, [branch]: job_id }));
+      setFailure(null);
+      void load();
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) setLogin(true);
       setError(e instanceof ApiError ? e.detail : String(e));
     }
   };
-  const finished = (branch: string) => {
+  const finished = (branch: string, failure: string | null) => {
     setJobs((j) => { const n = { ...j }; delete n[branch]; return n; });
+    if (failure) setFailure(`${branch}: ${failure}`); // the row goes away with the job, so say it up top
     void load();
   };
   if (!project) return <Empty />;
-  const rows = (data?.rows ?? []).filter((r) => r.branch.toLowerCase().includes(query.toLowerCase()));
+  const known = new Set((data?.rows ?? []).map((r) => r.branch));
+  const pending: BranchRow[] = Object.entries(jobs).filter(([b]) => !known.has(b))
+    .map(([b, id]) => ({ branch: b, local: null, remote: null, state: "in-progress", job_id: id }));
+  const rows = [...pending, ...(data?.rows ?? [])].filter((r) => r.branch.toLowerCase().includes(query.toLowerCase()));
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -153,6 +176,12 @@ export function Library() {
           <Button onClick={() => setAnalysing(true)}>Analyse a branch</Button>
         </div>
       </div>
+      {failure && (
+        <div role="alert" className="flex items-start justify-between gap-4 rounded-lg bg-warn-soft px-4 py-3 text-sm text-warn">
+          <span>{failure}</span>
+          <button type="button" aria-label="Dismiss" className="font-semibold" onClick={() => setFailure(null)}>×</button>
+        </div>
+      )}
       {(error ?? data?.registry_error) && dismissed !== (error ?? data?.registry_error) && (
         <div role="alert" className="flex items-start justify-between gap-4 rounded-lg bg-warn-soft px-4 py-3 text-sm text-warn">
           <span>{error ?? data?.registry_error}</span>
@@ -197,7 +226,7 @@ export function Library() {
                   </td>
                   <td className="px-4 py-4 font-mono text-xs text-muted">{Object.entries(commits).map(([k, v]) => <div key={k}>{k} {v.slice(0, 12)}</div>)}</td>
                   {jobId ? (
-                    <td className="px-4 py-4" colSpan={2}><Progress jobId={jobId} onDone={() => finished(r.branch)} /></td>
+                    <td className="px-4 py-4" colSpan={2}><Progress jobId={jobId} onDone={(failure) => finished(r.branch, failure)} /></td>
                   ) : (
                     <>
                       <td className="px-4 py-4 text-[13px]">

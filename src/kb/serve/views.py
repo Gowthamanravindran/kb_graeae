@@ -32,7 +32,7 @@ def branch_rows(project: str, store, remote: list[dict] | None, active: dict[str
     local = local_branches(store, project)
     remote_by = {r["branch"]: r for r in (remote or [])}
     rows = []
-    for b in sorted(set(local) | set(remote_by)):
+    for b in sorted(set(local) | set(remote_by) | set(active)):  # a first analysis has nothing saved yet
         lo, re_ = local.get(b), remote_by.get(b)
         rem = None if re_ is None else {"latest_version": re_["latest_version"], "overlay_count": re_["overlay_count"],
                                         "created_by": re_["created_by"], "commits": re_["commits"]}

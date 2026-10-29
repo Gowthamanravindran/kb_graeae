@@ -5,6 +5,7 @@ import { useJob } from "../api/useJob";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Input } from "../components/ui/input";
+import { Spinner } from "../components/ui/spinner";
 import { cn } from "../lib";
 import { useApp } from "../state";
 
@@ -31,7 +32,7 @@ function Progress({ jobId, onDone }: { jobId: string; onDone(result: Record<stri
       <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((job?.progress ?? 0) * 100)} className="h-2 overflow-hidden rounded bg-priv-soft">
         <div className="h-2 bg-accent" style={{ width: `${Math.max(5, Math.round((job?.progress ?? 0) * 100))}%` }} />
       </div>
-      <div className="text-xs text-muted">{job?.step || "Starting…"}</div>
+      <div className="flex items-center gap-2 text-xs text-muted"><Spinner />{job?.step || "Starting…"}</div>
     </div>
   );
 }

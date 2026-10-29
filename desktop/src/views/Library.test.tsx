@@ -97,3 +97,49 @@ test("library_shows_plan_count", async () => {
   renderApp(<Library />, api({ branches: vi.fn(async () => ({ rows: [{ branch: "main", local: withPlans, remote: null, state: "local-only", job_id: null }], registry_error: null })) }));
   expect(await screen.findByText("2 test plans")).toBeInTheDocument();
 });
+
+test("first_analysis_shows_progress_with_a_spinner_before_any_row_exists", async () => {
+  const a = api({
+    branches: vi.fn(async () => ({ rows: [], registry_error: null })),
+    analyze: vi.fn(async () => ({ job_id: "jN" })),
+    job: vi.fn(async (id: string) => ({ id, kind: "analyze", key: null, state: "running", step: "Checking out code", progress: 0.02, result: null, error: null, created_at: "" })),
+  });
+  renderApp(<Library />, a);
+  await userEvent.click(await screen.findByRole("button", { name: "Analyse a branch" }));
+  await userEvent.type(screen.getByLabelText("Branch"), "main");
+  await userEvent.click(screen.getByRole("button", { name: "Start analysis" }));
+  const r = await waitFor(() => row("main"));
+  expect(within(r).getByText("Checking out code")).toBeInTheDocument();
+  expect(within(r).getByRole("status", { name: "Working" })).toBeInTheDocument();
+  expect(screen.queryByText(/No analysed branches yet/)).not.toBeInTheDocument();
+});
+
+test("first_analysis_failure_is_shown", async () => {
+  const a = api({
+    branches: vi.fn(async () => ({ rows: [], registry_error: null })),
+    analyze: vi.fn(async () => ({ job_id: "jF" })),
+    job: vi.fn(async (id: string) => ({ id, kind: "analyze", key: null, state: "failed", step: "", progress: 0, result: null, error: "no branch or commit 'main' in sop-backend", created_at: "" })),
+  });
+  renderApp(<Library />, a);
+  await userEvent.click(await screen.findByRole("button", { name: "Analyse a branch" }));
+  await userEvent.type(screen.getByLabelText("Branch"), "main");
+  await userEvent.click(screen.getByRole("button", { name: "Start analysis" }));
+  expect(await screen.findByText(/no branch or commit 'main' in sop-backend/)).toBeInTheDocument();
+});
+
+test("analyse_dialog_prefills_production_branches", async () => {
+  const a = api({
+    projects: vi.fn(async () => [{ name: "sop", config_path: "/x", registry: null, linkers: [],
+      repos: [{ name: "sop-web", role: "frontend", default_branch: "master" }, { name: "sop-backend", role: "backend", default_branch: "develop" }] }]),
+    branches: vi.fn(async () => ({ rows: [], registry_error: null })),
+    analyze: vi.fn(async () => ({ job_id: "jP" })),
+  });
+  renderApp(<Library />, a);
+  await screen.findByText("sop-web");
+  await userEvent.click(await screen.findByRole("button", { name: "Analyse a branch" }));
+  expect(screen.getByRole("checkbox", { name: "Different branch per repo" })).toBeChecked();
+  expect(screen.getByLabelText("sop-backend branch")).toHaveValue("develop");
+  expect(screen.getByLabelText("Name for this analysis")).toHaveValue("production");
+  await userEvent.click(screen.getByRole("button", { name: "Start analysis" }));
+  expect(a.analyze).toHaveBeenCalledWith("sop", "production", false, { "sop-web": "master", "sop-backend": "develop" });
+});

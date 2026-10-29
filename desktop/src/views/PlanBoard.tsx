@@ -6,6 +6,7 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { PRIORITIES } from "../testplan";
+import { Spinner } from "../components/ui/spinner";
 import { useApp } from "../state";
 import { ClaudeBanner, GeneratePanel } from "./Impact";
 
@@ -27,7 +28,7 @@ function JobStrip({ jobId, onDone }: { jobId: string; onDone(error: string | nul
       <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((job?.progress ?? 0) * 100)} className="h-2 overflow-hidden rounded bg-priv-soft">
         <div className="h-2 bg-accent" style={{ width: `${Math.max(5, Math.round((job?.progress ?? 0) * 100))}%` }} />
       </div>
-      <div className="text-sm text-accent">{job?.step || "Starting…"}</div>
+      <div className="flex items-center gap-2 text-sm text-accent"><Spinner />{job?.step || "Starting…"}</div>
     </Card>
   );
 }
