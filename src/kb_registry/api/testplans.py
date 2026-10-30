@@ -322,3 +322,135 @@ def assign(p: str, b: str, plan_id: str, body: AssignIn, user: User = Depends(cu
             done.append(r.slot_id)
         s.commit()
     return {"assigned": sorted(done)}
+
+
+# ---------------------------------------------------------------- trace locks
+
+SIDES = ("base", "head")
+
+
+def _lock_args(p, b, plan_id, flow_id, side, user, s):
+    proj = require_role(s, user, p, "contributor")
+    _plan(s, proj.id, b, plan_id)
+    if side not in SIDES or not is_safe_id(flow_id):
+        raise HTTPException(400, "bad flow or side")
+    return proj
+
+
+@router.post(PREFIX + "/{plan_id}/traces/{flow_id}/{side}/lock")
+def lock_trace(p: str, b: str, plan_id: str, flow_id: str, side: str, user: User = Depends(current_user),
+               s: Session = Depends(get_session)):
+    """One person traces a flow at a time (30 minutes, renewed by asking again); others see who is tracing."""
+    from fastapi.responses import JSONResponse
+
+    proj = _lock_args(p, b, plan_id, flow_id, side, user, s)
+    with _plan_lock(s, proj.id, b, plan_id):
+        now = _now()
+        row = s.get(TraceLockRow, (proj.id, b, plan_id, flow_id, side), populate_existing=True)
+        if row is not None and row.holder_id != user.id and _aware(row.until) > now:
+            holder = s.get(User, row.holder_id)
+            return JSONResponse({"detail": f"{holder.email} is tracing this flow", "holder": holder.email,
+                                 "until": _aware(row.until).isoformat()}, status_code=409)
+        if row is None:
+            row = TraceLockRow(project_id=proj.id, branch=b, plan_id=plan_id, flow_id=flow_id, side=side,
+                               holder_id=user.id, until=now + TRACE_FOR)
+            s.add(row)
+        row.holder_id, row.until = user.id, now + TRACE_FOR
+        s.commit()
+        return {"holder": user.email, "until": _aware(row.until).isoformat()}
+
+
+@router.delete(PREFIX + "/{plan_id}/traces/{flow_id}/{side}/lock")
+def unlock_trace(p: str, b: str, plan_id: str, flow_id: str, side: str, user: User = Depends(current_user),
+                 s: Session = Depends(get_session)) -> dict:
+    proj = _lock_args(p, b, plan_id, flow_id, side, user, s)
+    with _plan_lock(s, proj.id, b, plan_id):
+        row = s.get(TraceLockRow, (proj.id, b, plan_id, flow_id, side), populate_existing=True)
+        released = row is not None and row.holder_id == user.id
+        if released:
+            s.delete(row)
+        s.commit()
+    return {"released": released}
+
+
+# ---------------------------------------------------------------- publishing items
+
+class PlanItemIn(BaseModel):
+    id: str
+    kind: str
+    payload: dict
+
+
+class PlanItemsIn(BaseModel):
+    items: list[PlanItemIn]
+
+
+def _validate_plan_item(it: PlanItemIn) -> dict:
+    from kb.packs.model import Flow
+    from kb.testplan.models import Scenario, TestCase
+
+    if not is_safe_id(it.id):
+        raise HTTPException(400, f"item id {it.id!r} is not allowed (letters, digits, . _ : - only)")
+    model = {"testcase": TestCase, "scenario": Scenario, "flowtrace": Flow}.get(it.kind)
+    if model is None:
+        raise HTTPException(400, f"item {it.id}: unknown kind {it.kind}")
+    try:
+        obj = model.model_validate(it.payload)
+    except ValidationError as e:
+        raise HTTPException(400, f"item {it.id}: invalid {it.kind}: {e.errors()[0]['msg']}") from e
+    if it.kind != "flowtrace" and obj.id != it.id:
+        raise HTTPException(400, f"item {it.id}: payload id is {obj.id}")
+    return obj.model_dump(mode="json")
+
+
+@router.post(PREFIX + "/{plan_id}/items")
+def publish_items(p: str, b: str, plan_id: str, body: PlanItemsIn, user: User = Depends(current_user),
+                  s: Session = Depends(get_session)) -> dict:
+    """Traces and scenarios: the first publish wins. A case is accepted when its slot is reserved by the publisher,
+    or reserved by nobody (or abandoned) and unwritten; then the slot is written. A case for a slot someone else
+    wrote or holds is a conflict, which the app turns into a suggested extra. Extras are always accepted."""
+    import json as _json
+
+    from kb_registry.api.packs import MAX_ITEM_BYTES, MAX_ITEMS, _sha
+
+    proj = require_role(s, user, p, "contributor")
+    _plan(s, proj.id, b, plan_id)
+    if len(body.items) > MAX_ITEMS:
+        raise HTTPException(413, f"at most {MAX_ITEMS} items per request")
+    prepared = []
+    for it in body.items:
+        if len(_json.dumps(it.payload)) > MAX_ITEM_BYTES:
+            raise HTTPException(413, f"item {it.id} is larger than {MAX_ITEM_BYTES // 1024} KB")
+        prepared.append((it, _validate_plan_item(it)))
+    accepted, existing, conflicts = [], [], []
+    with _plan_lock(s, proj.id, b, plan_id):
+        now = _now()
+        emails = _emails(s)
+        slots = {r.slot_id: r for r in _slots(s, proj.id, b, plan_id)}
+        for it, data in prepared:
+            if it.kind == "testcase" and not data.get("suggested") and data.get("slot_id") not in slots:
+                raise HTTPException(400, f"item {it.id}: no slot {data.get('slot_id')} in this plan")
+        for it, data in prepared:
+            row = s.get(PlanItemRow, (proj.id, b, plan_id, it.id), populate_existing=True)
+            if row is not None:
+                if _sha(row.payload) == _sha(data):
+                    existing.append(it.id)
+                else:
+                    conflicts.append({"id": it.id, "reason": "already published with different content"})
+                continue
+            if it.kind == "testcase" and not data.get("suggested"):
+                sl = slots[data["slot_id"]]
+                until = _aware(sl.reserved_until)
+                held = sl.status == "reserved" and until is not None and until > now and sl.reserved_by != user.id
+                if sl.case_id or sl.status in ("written", "stale", "obsolete"):
+                    conflicts.append({"id": it.id, "reason": "already written"})
+                    continue
+                if held:
+                    conflicts.append({"id": it.id, "reason": f"reserved by {emails.get(sl.reserved_by, 'someone')}"})
+                    continue
+                sl.status, sl.case_id, sl.reserved_by, sl.reserved_until = "written", it.id, None, None
+            s.add(PlanItemRow(project_id=proj.id, branch=b, plan_id=plan_id, item_id=it.id, kind=it.kind, payload=data,
+                              author_id=user.id, published_at=now))
+            accepted.append(it.id)
+        s.commit()
+    return {"accepted": accepted, "existing": existing, "conflicts": conflicts}

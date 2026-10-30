@@ -202,3 +202,101 @@ def test_concurrent_reservations_never_overlap(reg_any_db):
         t.join()
     flat = [x for g in got for x in g]
     assert not errors and len(flat) == len(set(flat)) == 20
+
+
+# ---------------------------------------------------------------- Task 3: trace locks and items
+
+def case(cid, sid, **kw):
+    return {"id": cid, "kind": "testcase", "payload": {"id": cid, "slot_id": sid, "title": f"Case {cid}",
+                                                        "steps": ["Do"], "expected": ["Done"],
+                                                        "created_at": "2026-10-30T00:00:00Z", **kw}}
+
+
+def publish(reg, items, email="contrib@x"):
+    return reg.client(email).post(f"{URL}/pr-1/items", json={"items": items})
+
+
+def lock(reg, email, flow="fl1", side="head", method="post"):
+    return reg.client(email).request(method.upper(), f"{URL}/pr-1/traces/{flow}/{side}/lock")
+
+
+def test_trace_lock_first_wins_then_expires(reg, monkeypatch):
+    from datetime import timedelta
+
+    from kb_registry.api import testplans as tp
+
+    share(reg, [slot("a")])
+    assert lock(reg, "contrib@x").status_code == 200
+    assert lock(reg, "contrib@x").status_code == 200  # the holder renews
+    busy = lock(reg, "maint@x")
+    assert busy.status_code == 409 and busy.json()["holder"] == "contrib@x"
+    assert lock(reg, "maint@x", side="base").status_code == 200  # each side is its own lock
+    assert reg.client("view@x").get(f"{URL}/pr-1").json()["trace_locks"][0]["holder"] in ("contrib@x", "maint@x")
+    later = tp._now() + timedelta(minutes=31)
+    monkeypatch.setattr(tp, "_now", lambda: later)
+    assert lock(reg, "maint@x").status_code == 200
+    assert lock(reg, "maint@x", method="delete").status_code == 200
+    assert lock(reg, "contrib@x").status_code == 200
+
+
+def test_publish_case_for_own_reservation(reg):
+    share(reg, [slot("a")])
+    reserve(reg, slot_ids=["a"])
+    r = publish(reg, [case("TC-001", "a")])
+    assert r.json() == {"accepted": ["TC-001"], "existing": [], "conflicts": []}
+    s = slots(reg)["a"]
+    assert (s["status"], s["case_id"], s["reserved_by"]) == ("written", "TC-001", None)
+    assert [i["id"] for i in reg.client("view@x").get(f"{URL}/pr-1").json()["items"]] == ["TC-001"]
+
+
+def test_publish_case_reserved_by_someone_else_conflicts(reg):
+    share(reg, [slot("a")])
+    reserve(reg, "maint@x", slot_ids=["a"])
+    assert publish(reg, [case("TC-001", "a")]).json()["conflicts"] == [{"id": "TC-001", "reason": "reserved by maint@x"}]
+
+
+def test_publish_case_conflicts_when_slot_written(reg):
+    share(reg, [slot("a")])
+    publish(reg, [case("TC-001", "a")], email="maint@x")  # unreserved and unwritten: accepted
+    r = publish(reg, [case("TC-002", "a")]).json()
+    assert r["accepted"] == [] and r["conflicts"] == [{"id": "TC-002", "reason": "already written"}]
+    assert publish(reg, [case("TC-001", "a")], email="maint@x").json()["existing"] == ["TC-001"]
+
+
+def test_late_publish_after_expiry_accepted_if_unwritten(reg, monkeypatch):
+    from datetime import timedelta
+
+    from kb_registry.api import testplans as tp
+
+    share(reg, [slot("a")])
+    reserve(reg, slot_ids=["a"])
+    later = tp._now() + timedelta(hours=25)
+    monkeypatch.setattr(tp, "_now", lambda: later)
+    assert publish(reg, [case("TC-001", "a", unreserved=True)]).json()["accepted"] == ["TC-001"]
+
+
+def test_publish_suggested_extra_always_accepted(reg):
+    share(reg, [slot("a")])
+    publish(reg, [case("TC-001", "a")])
+    extra = {"id": "TC-002", "kind": "testcase", "payload": {"id": "TC-002", "title": "Leap year", "suggested": True,
+                                                              "status": "suggested", "steps": ["a"], "expected": ["b"]}}
+    assert publish(reg, [extra]).json()["accepted"] == ["TC-002"]
+    assert slots(reg)["a"]["case_id"] == "TC-001"
+
+
+def test_scenario_and_flowtrace_first_wins(reg):
+    share(reg, [slot("a")])
+    sc = {"id": "sc1", "kind": "scenario", "payload": {"id": "sc1", "flow_id": "fl1", "type": "happy_path", "title": "Main"}}
+    ft = {"id": "fl1-head-abc", "kind": "flowtrace",
+          "payload": {"id": "tp-1", "question": "q", "module_ids": [], "steps": [], "mermaid": "", "created_at": "2026-10-30T00:00:00Z"}}
+    assert publish(reg, [sc, ft]).json()["accepted"] == ["sc1", "fl1-head-abc"]
+    again = publish(reg, [sc, {**sc, "payload": {**sc["payload"], "title": "Other"}}], email="maint@x").json()
+    assert again["existing"] == ["sc1"] and again["conflicts"] == [{"id": "sc1", "reason": "already published with different content"}]
+
+
+def test_publish_rejects_bad_items(reg):
+    share(reg, [slot("a")])
+    assert publish(reg, [{"id": "x", "kind": "qa", "payload": {}}]).status_code == 400
+    assert publish(reg, [case("TC-009", "missing")]).status_code == 400
+    assert publish(reg, [case("../x", "a")]).status_code == 400
+    assert publish(reg, [case("TC-001", "a")], email="view@x").status_code == 403
