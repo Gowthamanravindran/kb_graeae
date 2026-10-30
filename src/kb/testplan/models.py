@@ -46,6 +46,7 @@ class ChangeSet(BaseModel):
     answer_id: str | None = None
     created_by: str = "unknown"
     created_at: datetime = Field(default_factory=now)
+    shared: bool = False  # published to the registry for the team (stage 5b)
 
 
 class InventoryItem(BaseModel):
@@ -136,3 +137,4 @@ class TestCase(BaseModel):
     author: str = "unknown"
     created_at: datetime = Field(default_factory=now)
     stale: bool = False
+    unreserved: bool = False  # written offline, before the registry granted the slot

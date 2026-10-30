@@ -300,3 +300,11 @@ def test_publish_rejects_bad_items(reg):
     assert publish(reg, [case("TC-009", "missing")]).status_code == 400
     assert publish(reg, [case("../x", "a")]).status_code == 400
     assert publish(reg, [case("TC-001", "a")], email="view@x").status_code == 403
+
+
+def test_case_ids_are_unique_across_the_team(reg):
+    share(reg, [slot("a")])
+    a = reg.client("contrib@x").post(f"{URL}/pr-1/case-ids", json={"count": 2}).json()["ids"]
+    b = reg.client("maint@x").post(f"{URL}/pr-1/case-ids", json={"count": 3}).json()["ids"]
+    assert a == ["TC-001", "TC-002"] and b == ["TC-003", "TC-004", "TC-005"]
+    assert reg.client("view@x").post(f"{URL}/pr-1/case-ids", json={"count": 1}).status_code == 403

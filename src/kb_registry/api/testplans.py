@@ -140,7 +140,7 @@ def share(p: str, b: str, plan_id: str, body: ShareIn, user: User = Depends(curr
     plan = s.get(TestPlanRow, (proj.id, b, plan_id))
     if plan is None:
         plan = TestPlanRow(project_id=proj.id, branch=b, plan_id=plan_id, changeset=body.changeset,
-                           impact=body.impact, created_by=user.id, updated_at=_now())
+                           impact=body.impact, created_by=user.id, updated_at=_now(), next_case=0)
         s.add(plan)
         s.flush()
     with _plan_lock(s, proj.id, b, plan_id):
@@ -454,3 +454,22 @@ def publish_items(p: str, b: str, plan_id: str, body: PlanItemsIn, user: User = 
             accepted.append(it.id)
         s.commit()
     return {"accepted": accepted, "existing": existing, "conflicts": conflicts}
+
+
+class CountIn(BaseModel):
+    count: int
+
+
+@router.post(PREFIX + "/{plan_id}/case-ids")
+def case_ids(p: str, b: str, plan_id: str, body: CountIn, user: User = Depends(current_user),
+             s: Session = Depends(get_session)) -> dict:
+    """Case ids for a shared plan come from one counter, so two QAs never both write a TC-001."""
+    proj = require_role(s, user, p, "contributor")
+    _plan(s, proj.id, b, plan_id)
+    n = max(1, min(int(body.count), 500))
+    with _plan_lock(s, proj.id, b, plan_id):
+        plan = s.get(TestPlanRow, (proj.id, b, plan_id), populate_existing=True)
+        start = plan.next_case or 0
+        plan.next_case = start + n
+        s.commit()
+    return {"ids": [f"TC-{i:03d}" for i in range(start + 1, start + n + 1)]}

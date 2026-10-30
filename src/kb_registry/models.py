@@ -105,6 +105,7 @@ class TestPlanRow(Base):
     impact: Mapped[dict] = mapped_column(JSON)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    next_case: Mapped[int] = mapped_column(Integer, default=0)  # case ids are handed out here, unique per plan
 
 
 class PlanSlotRow(Base):

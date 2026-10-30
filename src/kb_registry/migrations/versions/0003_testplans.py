@@ -16,7 +16,8 @@ def upgrade():
     op.create_table("test_plans", *_KEY(),
                     sa.Column("changeset", sa.JSON, nullable=False), sa.Column("impact", sa.JSON, nullable=False),
                     sa.Column("created_by", sa.Integer, sa.ForeignKey("users.id"), nullable=False),
-                    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False))
+                    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+                    sa.Column("next_case", sa.Integer, nullable=False, server_default="0"))
     op.create_table("plan_slots", *_KEY(), sa.Column("slot_id", sa.String(200), primary_key=True),
                     sa.Column("data", sa.JSON, nullable=False), sa.Column("status", sa.String(20), nullable=False),
                     sa.Column("reserved_by", sa.Integer, sa.ForeignKey("users.id"), nullable=True),
