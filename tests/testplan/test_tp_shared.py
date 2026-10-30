@@ -206,3 +206,38 @@ def test_offline_run_warns_and_marks_unreserved(team, monkeypatch):
     assert "Offline: these cases are not reserved and may duplicate a teammate's" in res.warnings
     [c] = [c for c in PlanStore(team.b).cases(P, L, team.pid) if not c.suggested]
     assert c.unreserved and shared.pending(team.b, P, L, team.pid) >= 1
+
+
+# ---------------------------------------------------------------- Task 6: CLI
+
+def test_cli_share_pull_sync_assign_release(team, monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from kb.cli import app
+
+    y = tmp_path / "team.kb.yaml"
+    y.write_text(team.fx.cfg_path.read_text() + "registry: http://testserver\n")
+    who = {"email": "maint@x"}
+    monkeypatch.setattr("kb.sync.client.client_for", lambda *a, **k: team.client(who["email"]))
+    monkeypatch.setattr("kb.cli.get_provider", lambda: DesignFake())
+    run = lambda *args: CliRunner().invoke(app, ["testplan", *args])  # noqa: E731
+    monkeypatch.setenv("KB_HOME", str(team.a.kb_home))
+    r = run("share", str(y), team.pid)
+    assert r.exit_code == 0 and "shared" in r.stdout, r.output
+    monkeypatch.setenv("KB_HOME", str(team.b.kb_home))
+    who["email"] = "contrib@x"
+    r = run("pull", str(y), team.pid, "--label", L)
+    assert r.exit_code == 0, r.output
+    r = run("generate", str(y), team.pid, "--p0", "1")
+    assert r.exit_code == 0 and "wrote 1 cases" in r.stdout, r.output
+    monkeypatch.setenv("KB_HOME", str(team.a.kb_home))
+    who["email"] = "maint@x"
+    r = run("sync", str(y), team.pid)
+    assert r.exit_code == 0, r.output
+    flow = PlanStore(team.a).load_impact(P, L, team.pid).flows[0].id
+    r = run("assign", str(y), team.pid, "--flow", flow, "--to", "contrib@x")
+    assert r.exit_code == 0 and "assigned" in r.stdout, r.output
+    sid = next(s.id for s in PlanStore(team.a).load_slots(P, L, team.pid) if s.status == "planned")
+    team.client("contrib@x").reserve(P, L, team.pid, slot_ids=[sid])
+    r = run("release", str(y), team.pid, "--slot", sid)
+    assert r.exit_code == 0 and sid in r.stdout, r.output
