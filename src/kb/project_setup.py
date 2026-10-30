@@ -133,6 +133,21 @@ def _packages(root: Path) -> list[Path]:
     return sorted(set(out))
 
 
+_SRC = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte")
+
+
+def _source_files(pkg: Path, cap: int = 20000) -> int:
+    n = 0
+    for p in pkg.rglob("*"):
+        if "node_modules" in p.parts or any(part.startswith(".") for part in p.relative_to(pkg).parts):
+            continue
+        if p.suffix in _SRC:
+            n += 1
+            if n >= cap:
+                break
+    return n
+
+
 def _clean_name(name: str) -> str:
     name = re.sub(r"\.git$", "", name.split("/")[-1])
     name = re.sub(r"-(main|master)$", "", name)
@@ -143,13 +158,15 @@ def _clean_name(name: str) -> str:
 def _read(root: Path, source: str, kind: str, fallback_name: str) -> RepoInspection:
     root_signals = _signals(_deps(root))
     options = []
-    best, best_score = None, 0
+    best, best_score = None, (0, 0)
     for p in _packages(root):
         sig = _signals(_deps(p))
         rel = p.relative_to(root).as_posix()
         options.append(PathOption(path=rel, name=_clean_name(p.name), role=_role(sig)))
-        score = len(sig - {"frontend", "backend"}) * 2 + len(sig & {"frontend", "backend"})
-        if score > best_score:
+        # the package that looks most like an app (GraphQL, routes, queues), then the biggest: in a monorepo
+        # the main app usually dwarfs the editors, kits and tools beside it
+        score = (len(sig - {"frontend", "backend"}) * 2 + len(sig & {"frontend", "backend"}), _source_files(p))
+        if score[0] and score > best_score:
             best, best_score = (rel, sig), score
     path, signals = (best if best else (None, root_signals))
     if best:

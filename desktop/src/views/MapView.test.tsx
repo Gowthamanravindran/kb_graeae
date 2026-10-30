@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { MapView as MapPayload } from "../api/types";
+import type { Connections, MapView as MapPayload } from "../api/types";
 import { Mermaid } from "../components/Mermaid";
 import { useApp } from "../state";
 import { fakeApi, renderApp } from "../test-utils";
@@ -83,7 +83,7 @@ test("no branch selected asks to pick one", async () => {
   expect(await screen.findByText(/Open a branch from the Library/)).toBeInTheDocument();
 });
 
-const CONN = {
+const CONN: Connections = {
   lanes: [{ id: "sop-web", label: "sop-web", role: "frontend" }, { id: "sop-backend", label: "sop-backend", role: "backend" }, { id: "jobs", label: "Background jobs", role: "jobs" }],
   nodes: [
     { id: "sop-web::m-tasks", lane: "sop-web", kind: "module", module_id: "m-tasks", name: "Tasks", code_name: "m-tasks", links: 2,
@@ -125,4 +125,12 @@ test("graph_view_with_no_links_explains_why", async () => {
   renderApp(<MapView />, a, { project: "sop", branch: "main", view: "map" });
   await userEvent.click(await screen.findByRole("radio", { name: "Graph" }));
   expect(await screen.findByText(/No links between the repos were found/)).toBeInTheDocument();
+});
+
+test("graph_layout_keeps_each_repo_in_one_column", async () => {
+  const { graphLayout } = await import("./ConnectionsGraph");
+  const many = { ...CONN, nodes: Array.from({ length: 30 }, (_, i) => ({ ...CONN.nodes[1], id: `sop-backend::m${i}` })), edges: [] };
+  const { nodes } = graphLayout(many, null, null, () => {});
+  const xs = new Set(nodes.filter((n) => n.type === "box").map((n) => n.position.x));
+  expect(xs.size).toBe(1); // a second column would put the first column's lines behind its boxes
 });

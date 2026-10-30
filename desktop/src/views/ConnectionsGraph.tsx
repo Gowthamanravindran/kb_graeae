@@ -8,7 +8,8 @@ import { Spinner } from "../components/ui/spinner";
 import { cn } from "../lib";
 import { useApp } from "../state";
 
-const W = 240, H = 64, GAP = 18, COL_GAP = 28, LANE_GAP = 220, HEAD = 56, PER_COL = 12;
+// one column per repo: wrapping a long repo into two columns sent the inner column's lines behind the outer boxes
+const W = 240, H = 48, GAP = 10, LANE_GAP = 260, HEAD = 52;
 const KIND: Record<string, { label: string; color: string }> = {
   graphql: { label: "GraphQL", color: "#2F5BD3" },
   queue: { label: "Queue", color: "#B26A00" },
@@ -25,7 +26,7 @@ function Box({ data }: NodeProps<Node<BoxData>>) {
     <>
     <Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !min-h-0 !min-w-0 !border-0 !bg-line" isConnectable={false} />
     <button type="button" aria-label={`${node.name} · ${lane}`} onClick={() => onSelect(node.id)}
-      className={cn("nodrag nopan flex h-[64px] w-[240px] flex-col justify-center gap-0.5 rounded-xl border bg-surface px-3 text-left shadow-sm transition-opacity hover:border-accent",
+      className={cn("nodrag nopan flex h-[48px] w-[240px] flex-col justify-center rounded-lg border bg-surface px-3 text-left shadow-sm transition-opacity hover:border-accent",
         node.kind === "jobs" && "border-dashed", selected ? "border-2 border-accent" : "border-line", dim && "opacity-40")}>
       <span className="truncate text-sm font-semibold">{node.name}</span>
       <span className="truncate font-mono text-[11px] text-muted">{node.code_name}{node.routes.length ? ` · ${node.routes.length} route${node.routes.length === 1 ? "" : "s"}` : ""}</span>
@@ -51,19 +52,14 @@ export function graphLayout(g: Connections, selected: string | null, edgeSel: st
   const focus = selected !== null || edgeSel !== null;
   const nodes: Node[] = [];
   const laneLabel = Object.fromEntries(g.lanes.map((l) => [l.id, l.label]));
-  let x = 0;
-  for (const l of g.lanes) {
-    const mine = g.nodes.filter((n) => n.lane === l.id);
-    const cols = Math.max(1, Math.ceil(mine.length / PER_COL)); // a long repo wraps into side-by-side columns
-    const rows = Math.ceil(mine.length / cols);
+  g.lanes.forEach((l, li) => {
+    const x = li * (W + LANE_GAP);
     nodes.push({ id: `lane-${l.id}`, type: "lane", position: { x, y: 0 }, data: { label: l.label, role: l.role }, draggable: false, selectable: false, width: W, height: 40 });
-    mine.forEach((n, i) => nodes.push({
-      id: n.id, type: "box", draggable: false, width: W, height: H,
-      position: { x: x + Math.floor(i / rows) * (W + COL_GAP), y: HEAD + (i % rows) * (H + GAP) },
+    g.nodes.filter((n) => n.lane === l.id).forEach((n, i) => nodes.push({
+      id: n.id, type: "box", draggable: false, width: W, height: H, position: { x, y: HEAD + i * (H + GAP) },
       data: { node: n, lane: laneLabel[n.lane] ?? n.lane, selected: n.id === selected, dim: focus && !touching.has(n.id), onSelect },
     }));
-    x += cols * W + (cols - 1) * COL_GAP + LANE_GAP;
-  }
+  });
   const max = Math.max(1, ...g.edges.map((e) => e.count));
   const edges: Edge[] = g.edges.map((e) => {
     const on = e.id === edgeSel || (!!selected && (e.source === selected || e.target === selected));
@@ -127,7 +123,7 @@ export function ConnectionsGraph({ modules }: { modules: MapModule[] }) {
         <span>Pick a box or a line to see the actual calls.</span>
       </div>
       <div className="flex flex-col gap-5 lg:flex-row">
-        <Card className="h-[620px] min-w-0 flex-1 overflow-hidden">
+        <Card className="h-[max(620px,75vh)] min-w-0 flex-1 overflow-hidden">
           <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView minZoom={0.1} nodesConnectable={false}
             onEdgeClick={(_, e) => { setEdgeSel(e.id); setSelected(null); }}
             onPaneClick={() => { setSelected(null); setEdgeSel(null); }} proOptions={{ hideAttribution: true }}>
@@ -136,7 +132,7 @@ export function ConnectionsGraph({ modules }: { modules: MapModule[] }) {
           </ReactFlow>
         </Card>
         <aside aria-label="Connection details" className="w-full shrink-0 lg:w-[340px]">
-          <Card className="flex max-h-[620px] flex-col gap-4 overflow-y-auto p-5">
+          <Card className="flex max-h-[max(620px,75vh)] flex-col gap-4 overflow-y-auto p-5">
             {edge ? (
               <>
                 <div>

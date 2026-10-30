@@ -32,6 +32,8 @@ class CallHit:
     first_arg: str
     first_arg_kind: Literal["string", "member", "identifier", "other"]
     line: int
+    last_arg: str = ""  # the last argument's name when it is an identifier or `a.b` (never other source text)
+    n_args: int = 0
 
 
 @dataclass
@@ -136,7 +138,35 @@ def calls(tree: tsl.Tree, method: str) -> list[CallHit]:
         else:
             first, kind = _text(a), "other"
         obj = fn.child_by_field_name("object")
-        out.append(CallHit(_text(obj) if obj is not None else "", first, kind, n.start_point[0] + 1))
+        last = named[-1]
+        last_name = _text(last) if last.type in ("identifier", "member_expression") else ""
+        out.append(CallHit(_text(obj) if obj is not None else "", first, kind, n.start_point[0] + 1, last_name, len(named)))
+    return out
+
+
+_DECLS = {"function_declaration", "generator_function_declaration", "lexical_declaration", "variable_declaration",
+          "class_declaration"}
+
+
+def top_level_names(tree: tsl.Tree) -> list[tuple[str, int]]:
+    """Names declared at the top of a file (`function f`, `const f = …`, `export …`), with their line.
+    Destructured names (`const { f } = mod`) are only re-exports and are skipped."""
+    out = []
+    for node in tree.root_node.children:
+        decl = node
+        if node.type == "export_statement":
+            decl = node.child_by_field_name("declaration") or next((c for c in node.children if c.type in _DECLS), None)
+            if decl is None:
+                continue
+        if decl.type not in _DECLS:
+            continue
+        if decl.type in ("lexical_declaration", "variable_declaration"):
+            for c in decl.named_children:
+                n = c.child_by_field_name("name") if c.type == "variable_declarator" else None
+                if n is not None and n.type == "identifier":
+                    out.append((_text(n), node.start_point[0] + 1))
+        elif (n := decl.child_by_field_name("name")) is not None:
+            out.append((_text(n), node.start_point[0] + 1))
     return out
 
 

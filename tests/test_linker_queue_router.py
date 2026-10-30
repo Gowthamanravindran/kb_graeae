@@ -25,7 +25,32 @@ def test_string_topic_links():
     edges = run(BullQueueLinker(), c)
     topic = "mini-be:queue_topic:SIGN_UP"
     assert any(e.kind == "enqueues" and e.src == "mini-be:src/queue/user.ts" and e.dst == topic for e in edges)
-    assert any(e.kind == "consumed_by" and e.src == topic and e.dst == "mini-be:src/queue/index.ts" and e.resolved for e in edges)
+    # the job is handled by userSignUpJob (queue/user.ts), not by index.ts where it is registered
+    assert any(e.kind == "consumed_by" and e.src == topic and e.dst == "mini-be:src/queue/user.ts#userSignUpJob" and e.resolved
+               for e in edges)
+    handler = c.graph.node("mini-be:src/queue/user.ts#userSignUpJob")
+    assert (handler.name, handler.file, handler.line) == ("userSignUpJob", "src/queue/user.ts", 1)
+
+
+def test_central_registry_resolves_each_handler(tmp_path):
+    root = tmp_path / "be"
+    (root / "src" / "queue" / "user").mkdir(parents=True)
+    (root / "src" / "queue" / "payments").mkdir()
+    (root / "src" / "legacy").mkdir()
+    (root / "src" / "queue" / "index.ts").write_text(
+        "import consumer from './consumer'\nconst { userSignUpJob, syncSubscriptions } = consumer\n"
+        "export function start(JobsQueue) {\n  JobsQueue.process(qTopics.SIGN_UP, userSignUpJob)\n"
+        "  JobsQueue.process(qTopics.SYNC_SUBS, 5, consumer.syncSubscriptions)\n"
+        "  JobsQueue.process('INLINE', async (job) => job.data)\n}\n")
+    (root / "src" / "queue" / "user" / "index.ts").write_text("const userSignUpJob = async (job, done) => { done() }\nexport { userSignUpJob }\n")
+    (root / "src" / "legacy" / "old.ts").write_text("export const userSignUpJob = () => 1\n")  # same name, further away
+    (root / "src" / "queue" / "payments" / "syncSubscriptions.ts").write_text("export async function syncSubscriptions(job) { return 1 }\n")
+    c = ctx(QCFG, repos=("mini-be",), roots={"mini-be": root})
+    edges = run(BullQueueLinker(), c)
+    cons = {c.graph.node(e.src).name: e.dst for e in edges if e.kind == "consumed_by" and e.resolved}
+    assert cons == {"SIGN_UP": "mini-be:src/queue/user/index.ts#userSignUpJob",
+                    "SYNC_SUBS": "mini-be:src/queue/payments/syncSubscriptions.ts#syncSubscriptions",
+                    "INLINE": "mini-be:src/queue/index.ts"}  # an inline handler stays with the registering file
 
 
 def test_dynamic_topic_consumer_unresolved():

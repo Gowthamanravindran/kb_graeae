@@ -125,3 +125,18 @@ def test_write_project_validates(tmp_path):
     with pytest.raises(KbError, match="two repos named a"):
         write_project(tmp_path, NewProject(project="x", repos=[NewRepo(name="a", role="frontend", source="/tmp"),
                                                                NewRepo(name="a", role="backend", source="/tmp")]))
+
+
+def test_monorepo_tie_picks_the_biggest_app(tmp_path):
+    fe = tmp_path / "sop-fe"
+    _pkg(fe, {}, workspaces=["packages/*"])
+    app = {"react": "18", "react-router-dom": "6", "@apollo/client": "3"}
+    _pkg(fe / "packages" / "sop-editor", app)  # same signals, alphabetically first, small
+    (fe / "packages" / "sop-editor" / "src").mkdir()
+    (fe / "packages" / "sop-editor" / "src" / "a.tsx").write_text("export const a = 1;\n")
+    _pkg(fe / "packages" / "sop-web", app)
+    (fe / "packages" / "sop-web" / "src").mkdir()
+    for i in range(30):
+        (fe / "packages" / "sop-web" / "src" / f"p{i}.tsx").write_text("export const p = 1;\n")
+    r = inspect_repos([str(fe)], tmp_path / "home").repos[0]
+    assert (r.path, r.name) == ("packages/sop-web", "sop-web")
