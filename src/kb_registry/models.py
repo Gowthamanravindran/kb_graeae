@@ -91,3 +91,54 @@ class OverlayItem(Base):
     author_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     base_id: Mapped[int] = mapped_column(ForeignKey("bases.id"))
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+# ---- stage 5b: test plans shared by a team (separate tables: reservations need row locks)
+
+class TestPlanRow(Base):
+    __test__ = False
+    __tablename__ = "test_plans"
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    branch: Mapped[str] = mapped_column(String(255), primary_key=True)
+    plan_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    changeset: Mapped[dict] = mapped_column(JSON)
+    impact: Mapped[dict] = mapped_column(JSON)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class PlanSlotRow(Base):
+    __tablename__ = "plan_slots"
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    branch: Mapped[str] = mapped_column(String(255), primary_key=True)
+    plan_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    slot_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(20), default="planned")
+    reserved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reserved_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assigned_to: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    case_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
+class PlanItemRow(Base):
+    __tablename__ = "plan_items"
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    branch: Mapped[str] = mapped_column(String(255), primary_key=True)
+    plan_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    item_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    payload: Mapped[dict] = mapped_column(JSON)
+    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class TraceLockRow(Base):
+    __tablename__ = "trace_locks"
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    branch: Mapped[str] = mapped_column(String(255), primary_key=True)
+    plan_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    flow_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    side: Mapped[str] = mapped_column(String(10), primary_key=True)
+    holder_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
