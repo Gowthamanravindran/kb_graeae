@@ -45,6 +45,7 @@ export interface ImpactReport {
 export interface CaseSlot {
   id: string; flow_id: string; scenario_type: ScenarioType; inventory_ids: string[]; outcome: string; priority: Priority; rule: string;
   status: "planned" | "reserved" | "written" | "stale" | "failed" | "obsolete"; case_id: string | null; fail_reason: string | null;
+  reserved_by?: string | null; reserved_until?: string | null; assigned_to?: string | null;
 }
 export interface PlanScenario { id: string; flow_id: string; type: ScenarioType; title: string; description: string }
 export interface PlanCase {
@@ -60,7 +61,15 @@ export interface Coverage { items: Record<string, "covered" | "skipped" | "faile
 export interface TestPlanDetail {
   summary: PlanSummary | null; change_set: ChangeSetOut; impact: ImpactReport | null; slots: CaseSlot[];
   scenarios: PlanScenario[]; cases: PlanCase[]; extras: PlanCase[]; coverage: Coverage;
+  shared?: boolean; pending?: number;
 }
+export interface TeamPeople {
+  me: string | null; role: "viewer" | "contributor" | "maintainer" | null;
+  members: { email: string; name: string; role: string }[];
+  progress: { email: string; written: number; reserved: number }[];
+  trace_locks: { flow_id: string; side: string; holder: string; until: string }[];
+}
+export interface SharedPlanRow { plan_id: string; label: string; title: string; kind: string; counts_by_status: Record<string, number>; updated_at: string; local: boolean }
 export interface DesignResult { written: number; failed: number; extras: number }
 
 export interface InspectedRepo {

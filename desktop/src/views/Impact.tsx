@@ -22,8 +22,8 @@ export function ClaudeBanner() {
   );
 }
 
-export function GeneratePanel({ detail, flowIds, onStart, label = "Generate" }: {
-  detail: TestPlanDetail; flowIds: Set<string>; label?: string;
+export function GeneratePanel({ detail, flowIds, onStart, label = "Generate", warning }: {
+  detail: TestPlanDetail; flowIds: Set<string>; label?: string; warning?: string | null;
   onStart(counts: Record<Priority, number>, cap: number | null): Promise<void>;
 }) {
   const { status } = useApp();
@@ -61,6 +61,7 @@ export function GeneratePanel({ detail, flowIds, onStart, label = "Generate" }: 
           <div>{`Will generate ${chosen.length} of ${planned.length}`}</div>
           <div className="text-xs text-muted">{chosen.length ? `about ${calls} Claude calls` : "Nothing selected"}</div>
         </div>
+        {warning && <p role="alert" className="rounded-lg bg-warn-soft px-3 py-2 text-xs text-warn">{warning}</p>}
         <Button disabled={!chosen.length || busy || status?.claude.available === false}
           onClick={async () => { setBusy(true); try { await onStart(counts, capN); } finally { setBusy(false); } }}>{label}</Button>
       </Card>
