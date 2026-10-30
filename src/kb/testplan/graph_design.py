@@ -184,7 +184,12 @@ def flow_node(state: DesignState, ctx: _Ctx) -> dict:
                 ids[c.slot_id] = c.id
                 ctx.ps.save_case(project, label, pid, c)
 
+            orphans: list[str] = []
+
             def apply(all_slots):
+                present = {s.id for s in all_slots}
+                # a re-run of the impact can drop a slot while its case was being written: keep the case, obsolete
+                orphans[:] = [cid for sid, cid in ids.items() if sid not in present]
                 for s in all_slots:
                     if s.id in ids:
                         s.status, s.case_id, s.reserved_by = "written", ids[s.id], None
@@ -193,8 +198,11 @@ def flow_node(state: DesignState, ctx: _Ctx) -> dict:
                     elif s.id in failed and s.status == "reserved":
                         s.status, s.fail_reason, s.reserved_by = "failed", failed[s.id], None
             ctx.ps.update_slots(project, label, pid, apply)
+            for c in kept:
+                if c.id in orphans:
+                    ctx.ps.save_case(project, label, pid, c.model_copy(update={"status": "obsolete"}))
         ctx.done.append(fid)
-        return {"results": [{"flow_id": fid, "written": len(kept), "failed": len(failed),
+        return {"results": [{"flow_id": fid, "written": len(kept) - len(orphans), "failed": len(failed),
                              "extras": [e.model_dump(mode="json") for e in extras]}]}
     except Exception as e:  # noqa: BLE001 — one flow failing must not stop the others
         reason = str(e) or type(e).__name__

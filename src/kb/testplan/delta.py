@@ -209,7 +209,11 @@ def graph_delta(base: CodeGraph, head: CodeGraph, hunks: list[Hunk],
             owners += [(nid, a, b) for nid, a, b in spans("head", h.repo, h.file) if _overlaps(a, b, h.new_start, h.new_len)]
         if h.removed:
             owners += [(nid, a, b) for nid, a, b in spans("base", h.repo, h.old_file) if _overlaps(a, b, h.old_start, h.old_len)]
-        for nid, _, _ in owners:
+        # only the innermost code a change sits in: a method, not also the class around it (whose other
+        # methods' callers would otherwise all count as affected); hunks spanning two functions keep both
+        inner = [o for o in owners if not any(p is not o and o[1] <= p[1] and p[2] <= o[2] and (p[1], p[2]) != (o[1], o[2])
+                                               for p in owners)]
+        for nid, _, _ in inner:
             changed.add(tr(nid))
         if owners:
             d.hunk_owner[i] = tr(min(owners, key=lambda o: o[2] - o[1])[0])

@@ -46,9 +46,34 @@ class GraphqlLinker:
             style = styles.get(be_repo, "sdl") if isinstance(styles, dict) else styles
             for field, ids in self._backend(ctx, be_repo, style).items():
                 resolvers.setdefault(field, []).extend(ids)
-        return [e for fe_repo in ctx.config.froms() for e in self._client(ctx, fe_repo, resolvers)]
+        exported: dict[str, list[tuple[str, str]]] = {}  # query variable -> [(repo, op id)], across all client apps
+        edges = [e for fe_repo in ctx.config.froms() for e in self._client(ctx, fe_repo, resolvers, exported)]
+        return edges + self._shared_use(ctx, exported)
 
-    def _client(self, ctx: LinkContext, fe_repo: str, resolvers: dict[str, list[str]]) -> list[CodeEdge]:
+    def _shared_use(self, ctx: LinkContext, exported: dict[str, list[tuple[str, str]]]) -> list[CodeEdge]:
+        """A screen in one app using a query written in another package (a shared `commons`) sends that query.
+        Only an explicit import of the name counts, so the same variable name defined locally doesn't."""
+        if not exported or len(ctx.config.froms()) < 2:
+            return []
+        g = ctx.graph
+        names = re.compile(r"\bimport\s*(?:type\s+)?\{([^}]*)\}\s*from\s*['\"][^'\"]+['\"]", re.S)
+        out = []
+        for repo in ctx.config.froms():
+            root = ctx.checkouts[repo].root
+            for path in ts.iter_source_files(root, list(ctx.ignore)):
+                text = path.read_text(errors="replace")
+                imported = {n.strip().split(" as ")[0].strip() for m in names.finditer(text) for n in m.group(1).split(",")}
+                for var in imported & set(exported):
+                    for op_repo, op_id in exported[var]:
+                        if op_repo == repo:
+                            continue  # same app: linked by the usage scan already
+                        rel = path.relative_to(root).as_posix()
+                        out.append(CodeEdge(src=ensure_file_node(g, repo, rel), dst=op_id, kind="sends_graphql",
+                                            origin="linker", label=var))
+        return out
+
+    def _client(self, ctx: LinkContext, fe_repo: str, resolvers: dict[str, list[str]],
+                exported: dict[str, list[tuple[str, str]]] | None = None) -> list[CodeEdge]:
         edges: list[CodeEdge] = []
         g = ctx.graph
         root = ctx.checkouts[fe_repo].root
@@ -75,6 +100,8 @@ class GraphqlLinker:
                     ensure_file_node(g, fe_repo, rel)
                     if hit.var_name:
                         var_to_ops.setdefault(hit.var_name, []).append(op_id)
+                        if exported is not None:
+                            exported.setdefault(hit.var_name, []).append((fe_repo, op_id))
                     for sel in d.selection_set.selections:
                         field = getattr(getattr(sel, "name", None), "value", None)
                         if not field:

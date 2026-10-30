@@ -82,3 +82,16 @@ def test_backend_style_per_service(tmp_path):
              "options": {"backend_style": {"users": "sdl", "payments": "graphql-compose"}}}, repos=tuple(roots), roots=roots)
     edges = run(GraphqlLinker(), c)
     assert sorted(c.graph.node(e.dst).repo for e in edges if e.kind == "handled_by" and e.resolved) == ["payments", "users"]
+
+
+def test_screen_using_a_shared_query_package_sends_it(tmp_path):
+    commons = _svc(tmp_path, "commons", {"src/tasks.ts": "export const addTaskQuery = gql`mutation AddTask { addTask { id } }`;\n"})
+    web = _svc(tmp_path, "web", {
+        "src/TaskCreate.tsx": "import {\n  addTaskQuery,\n} from '@sop/commons'\nexport const C = () => useMutation(addTaskQuery)\n",
+        "src/Other.tsx": "const addTaskQuery = 1; // same name, never imported\nexport const O = () => addTaskQuery\n"})
+    api = _svc(tmp_path, "api", {"schema.graphql": "type Mutation {\n  addTask: Task\n}\n"})
+    roots = {"commons": commons, "web": web, "api": api}
+    c = ctx({"type": "graphql", "from": ["web", "commons"], "to": "api"}, repos=tuple(roots), roots=roots)
+    edges = run(GraphqlLinker(), c)
+    sends = sorted((e.src, c.graph.node(e.dst).name) for e in edges if e.kind == "sends_graphql")
+    assert sends == [("web:src/TaskCreate.tsx", "AddTask")]

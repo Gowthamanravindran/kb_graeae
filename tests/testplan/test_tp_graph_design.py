@@ -125,3 +125,23 @@ def test_partly_failed_flow_saves_written_cases_and_fails_the_rest(plan, monkeyp
     st = Counter(s.status for s in _slots(store, pid) if s.priority == "P0")
     assert res.written >= 1 and res.failed >= 1 and st["written"] == res.written and st["failed"] == res.failed
     assert {s.fail_reason for s in _slots(store, pid) if s.status == "failed"} == {"Claude timed out"}
+
+
+def test_case_for_a_slot_removed_mid_write_is_obsolete(plan, monkeypatch):
+    from kb.testplan import graph_design, nodes_design
+
+    cfg, store, pid = plan
+    ps = PlanStore(store)
+    real = nodes_design.write_cases
+    gone = {}
+
+    def meanwhile(w, scen, slots):
+        cases, extras, failed = real(w, scen, slots)
+        gone["id"] = slots[0].id  # a re-run of the impact drops this slot while its case is being written
+        ps.update_slots("mini", "production", pid, lambda ss: ss.remove(next(s for s in ss if s.id == gone["id"])))
+        return cases, extras, failed
+    monkeypatch.setattr(graph_design, "write_cases", meanwhile)
+    run_design(cfg, pid, "production", store, DesignFake(), RecordingTracer(), "pr", {"P0": 2}, None)
+    orphan = next(c for c in ps.cases("mini", "production", pid) if c.slot_id == gone["id"])
+    assert orphan.status == "obsolete"
+    assert all(c.status == "written" for c in ps.cases("mini", "production", pid) if c.slot_id != gone["id"])
