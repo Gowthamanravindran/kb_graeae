@@ -122,6 +122,52 @@ function AnalyseDialog({ open, onOpenChange, onStart, repos }: {
   );
 }
 
+type Redo = { kind: "reanalyse" | "fresh" | "delete"; row: BranchRow };
+
+function RedoDialog({ redo, onClose, onConfirm }: { redo: Redo | null; onClose(): void; onConfirm(r: Redo): void }) {
+  if (!redo) return null;
+  const { kind, row } = redo;
+  const lo = row.local;
+  const answers = lo?.qa_total ?? 0, plans = lo?.testplans ?? 0;
+  const lost = [answers ? `${answers} saved answer${answers === 1 ? "" : "s"}` : "", plans ? `${plans} test plan${plans === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ");
+  const title = kind === "delete" ? `Delete ${row.branch}?` : kind === "fresh" ? `Start ${row.branch} from scratch?` : `Re-analyse ${row.branch}?`;
+  const action = kind === "delete" ? "Delete" : kind === "fresh" ? "Delete and analyse again" : "Re-analyse";
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogTitle>{title}</DialogTitle>
+        <div className="mb-4 flex flex-col gap-2 text-sm text-muted">
+          {kind === "reanalyse" && <p>Rebuilds the map and modules from the current code. It keeps the {answers} saved answer{answers === 1 ? "" : "s"}{plans ? ` and ${plans} test plan${plans === 1 ? "" : "s"}` : ""}; answers whose code changed are marked stale. Naming modules uses Claude.</p>}
+          {kind === "fresh" && <p>Deletes this analysis{lost ? `, including ${lost},` : ""} then analyses the same branches again from nothing. Naming modules uses Claude.</p>}
+          {kind === "delete" && <p>Removes the map{lost ? `, ${lost}` : ""} from this computer. This can't be undone.</p>}
+          {kind !== "reanalyse" && row.remote && <p>The copy shared to the registry stays in the registry; you can pull it again.</p>}
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant={kind === "reanalyse" ? "primary" : "danger"} onClick={() => onConfirm(redo)}>{action}</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RowMenu({ row, onPick }: { row: BranchRow; onPick(kind: Redo["kind"]): void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <Button variant="ghost" size="sm" aria-label={`More actions for ${row.branch}`} aria-expanded={open} onClick={() => setOpen((o) => !o)}>⋯</Button>
+      {open && (
+        <div role="menu" className="absolute right-0 z-20 mt-1 w-44 rounded-lg border border-line bg-surface p-1 text-left shadow-lg" onMouseLeave={() => setOpen(false)}>
+          {([["reanalyse", "Re-analyse"], ["fresh", "Start fresh…"], ["delete", "Delete…"]] as const).map(([k, label]) => (
+            <button key={k} type="button" role="menuitem" onClick={() => { setOpen(false); onPick(k); }}
+              className={`block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-bg ${k === "delete" ? "text-warn" : ""}`}>{label}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Library() {
   const { api, current, project, go, set } = useApp();
   const [data, setData] = useState<BranchesResponse | null>(null);
@@ -132,6 +178,7 @@ export function Library() {
   const [login, setLogin] = useState(false);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  const [redo, setRedo] = useState<Redo | null>(null);
   const load = useCallback(async () => {
     if (!project) return;
     try {
@@ -157,6 +204,11 @@ export function Library() {
     setJobs((j) => { const n = { ...j }; delete n[branch]; return n; });
     if (failure) setFailure(`${branch}: ${failure}`); // the row goes away with the job, so say it up top
     void load();
+  };
+  const confirmRedo = ({ kind, row }: Redo) => {
+    setRedo(null);
+    if (kind === "delete") void start(row.branch, () => api.deleteBranch(project!, row.branch));
+    else void start(row.branch, () => api.analyze(project!, row.branch, false, undefined, kind === "fresh"));
   };
   if (!project) return <Empty />;
   const known = new Set((data?.rows ?? []).map((r) => r.branch));
@@ -254,6 +306,7 @@ export function Library() {
                           <Button variant="secondary" size="sm" onClick={() => go("map", { branch: r.branch })}>Open</Button>
                         </>
                       ) : null}
+                      {!jobId && lo && <RowMenu row={r} onPick={(kind) => setRedo({ kind, row: r })} />}
                     </div>
                   </td>
                 </tr>
@@ -268,6 +321,7 @@ export function Library() {
       <AnalyseDialog open={analysing} onOpenChange={setAnalysing} repos={current?.repos ?? []}
         onStart={(b, resume, branches) => { set({ branch: b }); void start(b, () => (branches ? api.analyze(project, b, resume, branches) : api.analyze(project, b, resume))); }} />
       <LoginDialog open={login} onOpenChange={setLogin} />
+      <RedoDialog redo={redo} onClose={() => setRedo(null)} onConfirm={confirmRedo} />
     </div>
   );
 }

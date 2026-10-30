@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -127,6 +128,7 @@ class SsoIn(BaseModel):
 class AnalyzeIn(BaseModel):
     resume: bool = False
     branches: dict[str, str] | None = None  # a branch per repo; the path's branch is then the pack's label
+    fresh: bool = False  # delete the branch's analysis (answers, test plans) first and start from scratch
 
 
 class AskIn(BaseModel):
@@ -319,19 +321,44 @@ def create_app(settings: ServeSettings) -> FastAPI:
 
     @app.post("/api/projects/{name}/branches/{branch:path}/analyze")
     def analyze(name: str, branch: str, body: AnalyzeIn) -> dict:
-        from kb.analyze import run_analyze
         from kb.cli import _author
         from kb.tracing import make_tracer
 
         cfg = ws.config(name)
+        store = settings.store()
+        branches = body.branches
+        if branches is None and store.exists(cfg.project, branch):  # re-analysing: same branch per repo as before
+            prev = json.loads((store.pack_dir(cfg.project, branch) / "manifest.json").read_text()).get("branches") or {}
+            branches = prev if len(set(prev.values()) - {branch}) else None
 
         def run(rep):
-            m = run_analyze(cfg, branch, settings.store(), settings.provider(), make_tracer(cfg), resume=body.resume, branches=body.branches,
-                            author=_author(), progress=lambda text, frac: rep.step(text, frac))
+            from kb import analyze as an
+
+            if body.fresh:
+                rep.step("Deleting the old analysis", 0.01)
+                store.delete(cfg.project, branch)
+            m = an.run_analyze(cfg, branch, store, settings.provider(), make_tracer(cfg), resume=body.resume and not body.fresh,
+                               branches=branches, author=_author(), progress=lambda text, frac: rep.step(text, frac))
             return {"status": m.status, "stats": m.stats, "failed_modules": m.failed_modules}
         return {"job_id": submit_or_409(jobs, "analyze", run, key=_branch_key(cfg.project, branch),
                                           scope=branch_scope(cfg.project, branch), exclusive=True).id}
 
+
+    @app.delete("/api/projects/{name}/branches/{branch:path}")
+    def delete_branch(name: str, branch: str) -> dict:
+        """Delete a branch's analysis from this computer (the registry's copy stays). Runs as an exclusive job
+        so it never pulls a pack from under a running question, analysis or test plan."""
+        cfg = ws.config(name)
+        store = settings.store()
+        if not store.pack_dir(cfg.project, branch).exists():
+            raise HTTPException(404, f"no analysis of {branch} on this computer")
+
+        def run(rep):
+            rep.step(f"Deleting {branch}", 0.5)
+            store.delete(cfg.project, branch)
+            return {"deleted": branch}
+        return {"job_id": submit_or_409(jobs, "delete", run, key=_branch_key(cfg.project, branch),
+                                        scope=branch_scope(cfg.project, branch), exclusive=True).id}
 
     def _ask_job(cfg, branch: str, question: str, from_qa=None, no_reuse=False):
         def run(rep):

@@ -98,6 +98,17 @@ class PackStore:
                 best = m
         return best.branch if best else None
 
+    def delete(self, project: str, branch: str) -> bool:
+        """Remove a branch's analysis from this computer: the pack (map, answers, test plans) and its
+        analysis scratch. A copy in the registry is untouched. Returns whether there was anything."""
+        d = self.pack_dir(project, branch)
+        work = self.kb_home / "work" / d.name
+        found = d.exists()
+        for p in (d, work):
+            if p.exists():
+                shutil.rmtree(p)
+        return found
+
     def exists(self, project: str, branch: str) -> bool:
         return (self.pack_dir(project, branch) / "manifest.json").exists()
 

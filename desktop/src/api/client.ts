@@ -56,8 +56,9 @@ export function createClient({ baseUrl, token }: { baseUrl: string; token: strin
     saveSettings: (values: Partial<Record<SettingKey, string | null>>) => call<SettingsView>("PUT", "/api/settings", { values }),
     loginSso: (registry: string) => call<JobRef>("POST", "/api/login/sso", { registry }),
     branches: (p: string) => call<BranchesResponse>("GET", `/api/projects/${encodeURIComponent(p)}/branches`),
-    analyze: (p: string, br: string, resume = false, branches?: Record<string, string>) =>
-      call<JobRef>("POST", `${b(p, br)}/analyze`, branches ? { resume, branches } : { resume }),
+    analyze: (p: string, br: string, resume = false, branches?: Record<string, string>, fresh = false) =>
+      call<JobRef>("POST", `${b(p, br)}/analyze`, { resume, ...(branches ? { branches } : {}), ...(fresh ? { fresh } : {}) }),
+    deleteBranch: (p: string, br: string) => call<JobRef>("DELETE", b(p, br)),
     ask: (p: string, br: string, o: { question: string; fromQa?: string | null; noReuse?: boolean }) =>
       call<JobRef>("POST", `${b(p, br)}/ask`, { question: o.question, from_qa: o.fromQa ?? null, no_reuse: o.noReuse ?? false }),
     push: (p: string, br: string) => call<JobRef>("POST", `${b(p, br)}/push`),

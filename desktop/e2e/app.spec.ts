@@ -220,3 +220,16 @@ test("map_graph_shows_repo_connections", async () => {
   await expect(panel.getByText("AddTask")).toBeVisible();
   await app.close();
 });
+
+test("delete_an_analysed_branch", async () => {
+  const { home } = makeHome();
+  const { app, page } = await launch({ KB_HOME: home });
+  await expect(page.getByRole("heading", { name: "Library" })).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "More actions for main" }).click();
+  await page.getByRole("menuitem", { name: "Delete…" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await expect(page.getByText(/No analysed branches yet/)).toBeVisible({ timeout: 20_000 });
+  const packs = fs.readdirSync(path.join(home, "packs")).filter((d) => d.startsWith("mini@"));
+  expect(packs).toEqual([]);
+  await app.close();
+});

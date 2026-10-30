@@ -38,6 +38,15 @@ Choose **Add a project** (on the empty Library, or **Add a project…** in the p
 
 **Use an existing kb.yaml…** in the same dialog adds a project from a `kb.yaml` you already have.
 
+### Re-analysing or deleting a branch
+
+The **⋯** menu on an analysed branch in the Library has three actions:
+- **Re-analyse** rebuilds the map and modules from the current code. It keeps saved answers and test plans, and marks answers whose code changed as stale.
+- **Start fresh…** deletes the branch's analysis, including its answers and test plans, then analyses the same branches again. A per-repo set such as `production` keeps its branch per repo.
+- **Delete…** removes the analysis from this computer. A copy shared to the registry stays there and can be pulled again.
+
+Each one asks first and says what will be lost. None of them can run while a question, analysis or test plan is running on that branch.
+
 ### Tests
 
 | What | Command |
