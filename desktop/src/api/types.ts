@@ -67,7 +67,7 @@ export interface InspectedRepo {
   source: string; kind: "url" | "local"; name: string; role: string; is_git: boolean; default_branch: string | null;
   branches: string[]; path: string | null; path_options: { path: string; name: string; role: string }[]; context_docs: string[];
 }
-export interface LinkerSpec { type: string; from?: string; to?: string; in?: string; options?: Record<string, unknown> }
+export interface LinkerSpec { type: string; from?: string | string[]; to?: string | string[]; in?: string | string[]; options?: Record<string, unknown> }
 export interface Inspection { repos: InspectedRepo[]; linkers: LinkerSpec[] }
 export interface NewProjectBody {
   project: string;

@@ -54,15 +54,15 @@ def test_is_url():
 def test_inspect_local_monorepo_and_backend(repos, tmp_path):
     fe, be = repos
     got = inspect_repos([str(fe), str(be)], tmp_path / "home")
-    web, back = got.repos
+    web, back = got.repos  # ui-kit is a component library (React only), not an app: left out
     assert (web.name, web.role, web.kind, web.default_branch, web.path) == ("sop-web", "frontend", "local", "master", "packages/sop-web")
-    assert [p.path for p in web.path_options] == ["packages/sop-web", "packages/ui-kit"]
+    assert web.source == str(fe) and [p.path for p in web.path_options] == ["packages/sop-web", "packages/ui-kit"]
     assert (back.name, back.role, back.default_branch) == ("sop-backend", "backend", "develop")
     assert set(back.branches) == {"develop", "feature/x"}
     assert back.context_docs == ["CONTEXT.md"]
-    lk = {(x.type, x.from_, x.to, x.in_): x.options for x in got.linkers}
-    assert lk == {("graphql", "sop-web", "sop-backend", None): {"backend_style": "graphql-compose"},
-                  ("react-router", None, None, "sop-web"): {}, ("bull-queue", None, None, "sop-backend"): {}}
+    lk = {(x.type, str(x.from_), str(x.to), str(x.in_)): x.options for x in got.linkers}
+    assert lk == {("graphql", "sop-web", "sop-backend", "None"): {"backend_style": "graphql-compose"},
+                  ("react-router", "None", "None", "sop-web"): {}, ("bull-queue", "None", "None", "sop-backend"): {}}
 
 
 def test_inspect_url_repo_clones_to_scratch_and_reads_remote_default(repos, tmp_path):
@@ -127,16 +127,38 @@ def test_write_project_validates(tmp_path):
                                                                NewRepo(name="a", role="backend", source="/tmp")]))
 
 
-def test_monorepo_tie_picks_the_biggest_app(tmp_path):
+def test_every_app_in_a_monorepo_becomes_a_repo(tmp_path):
     fe = tmp_path / "sop-fe"
     _pkg(fe, {}, workspaces=["packages/*"])
     app = {"react": "18", "react-router-dom": "6", "@apollo/client": "3"}
-    _pkg(fe / "packages" / "sop-editor", app)  # same signals, alphabetically first, small
-    (fe / "packages" / "sop-editor" / "src").mkdir()
-    (fe / "packages" / "sop-editor" / "src" / "a.tsx").write_text("export const a = 1;\n")
-    _pkg(fe / "packages" / "sop-web", app)
-    (fe / "packages" / "sop-web" / "src").mkdir()
-    for i in range(30):
-        (fe / "packages" / "sop-web" / "src" / f"p{i}.tsx").write_text("export const p = 1;\n")
-    r = inspect_repos([str(fe)], tmp_path / "home").repos[0]
-    assert (r.path, r.name) == ("packages/sop-web", "sop-web")
+    for name, deps, files in (("sop-editor", app, 1), ("sop-web", app, 30), ("sop-mobile", {"react": "18", "@apollo/client": "3"}, 5),
+                              ("ui-kit", {"react": "18"}, 50)):
+        _pkg(fe / "packages" / name, deps)
+        (fe / "packages" / name / "src").mkdir()
+        for i in range(files):
+            (fe / "packages" / name / "src" / f"p{i}.tsx").write_text("export const p = 1;\n")
+    be = tmp_path / "api"
+    _pkg(be, {"apollo-server": "3"})
+    got = inspect_repos([str(fe), str(be)], tmp_path / "home")
+    assert [(r.name, r.path) for r in got.repos] == [
+        ("sop-web", "packages/sop-web"), ("sop-mobile", "packages/sop-mobile"), ("sop-editor", "packages/sop-editor"), ("api", None)]
+    assert {r.source for r in got.repos[:3]} == {str(fe)}
+    [gql] = [x for x in got.linkers if x.type == "graphql"]
+    assert (gql.from_, gql.to) == (["sop-web", "sop-mobile", "sop-editor"], "api")  # every app calls the backend
+    [router] = [x for x in got.linkers if x.type == "react-router"]
+    assert router.in_ == ["sop-web", "sop-editor"]
+
+
+def test_many_services_share_one_queue_link(tmp_path):
+    a, b = tmp_path / "orders", tmp_path / "worker"
+    _pkg(a, {"express": "4", "bullmq": "4", "@apollo/server": "4"})
+    _pkg(b, {"bullmq": "4"})
+    got = inspect_repos([str(a), str(b)], tmp_path / "home")
+    [q] = [x for x in got.linkers if x.type == "bull-queue"]
+    assert q.in_ == ["orders", "worker"]
+
+
+def test_graphql_client_library_counts_as_frontend(tmp_path):
+    lib = tmp_path / "sop-commons"
+    _pkg(lib, {"@apollo/client": "3"})
+    assert inspect_repos([str(lib)], tmp_path / "home").repos[0].role == "frontend"

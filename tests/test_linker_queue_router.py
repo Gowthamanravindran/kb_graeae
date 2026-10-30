@@ -102,3 +102,25 @@ def test_inline_handler_and_concurrency_never_copy_source(tmp_path):
     dump = repr([e.model_dump() for e in edges]) + repr([n.model_dump() for n in c.graph.nodes()])
     assert "SECRET_INLINE_MARKER" not in dump and "=>" not in dump
     assert {e.dst for e in edges} == {"unresolved:queue:<all-jobs>"}
+
+
+def test_queue_across_services(tmp_path):
+    api = tmp_path / "api"
+    worker = tmp_path / "worker"
+    (api / "src").mkdir(parents=True)
+    (worker / "src").mkdir(parents=True)
+    (api / "src" / "orders.ts").write_text("export function place(OrderQueue) { OrderQueue.add('ORDER_PLACED', {}) }\n")
+    (worker / "src" / "jobs.ts").write_text("export async function onOrder(job) { return 1 }\n")
+    (worker / "src" / "main.ts").write_text("export function start(OrderQueue) { OrderQueue.process('ORDER_PLACED', onOrder) }\n")
+    c = ctx({"type": "bull-queue", "in": ["api", "worker"]}, repos=("api", "worker"), roots={"api": api, "worker": worker})
+    edges = run(BullQueueLinker(), c)
+    enq = [e for e in edges if e.kind == "enqueues"]
+    cons = [e for e in edges if e.kind == "consumed_by" and e.resolved]
+    assert [e.src for e in enq] == ["api:src/orders.ts"]
+    assert [(e.src, e.dst) for e in cons] == [(enq[0].dst, "worker:src/jobs.ts#onOrder")]
+    assert not [e for e in edges if not e.resolved]
+
+
+def test_router_in_several_apps():
+    c = ctx({"type": "react-router", "in": ["mini-fe"]}, repos=("mini-fe",))
+    assert [e for e in run(ReactRouterLinker(), c) if e.resolved]

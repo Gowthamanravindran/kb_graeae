@@ -12,19 +12,28 @@ import { Spinner } from "./ui/spinner";
 const msg = (e: unknown) => (e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e));
 const select = "h-9 w-full rounded-lg border border-line bg-surface px-2 text-sm";
 
-/** A detected link between repos, held by repo position so renaming a repo keeps it pointing right. */
-interface Link { type: string; from?: number; to?: number; in?: number; options: Record<string, unknown>; on: boolean }
+/** A detected link between repos, held by repo position so renaming a repo keeps it pointing right.
+ * Each side can name several repos: every app that calls GraphQL against every service that serves it. */
+interface Link { type: string; from: number[]; to: number[]; in: number[]; options: Record<string, unknown>; on: boolean }
+
+const many = (v?: string | string[]) => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
 
 function toLinks(specs: LinkerSpec[], repos: InspectedRepo[]): Link[] {
-  const idx = (n?: string) => (n === undefined ? undefined : repos.findIndex((r) => r.name === n));
+  const idx = (v?: string | string[]) => many(v).map((n) => repos.findIndex((r) => r.name === n)).filter((i) => i >= 0);
   return specs.map((s) => ({ type: s.type, from: idx(s.from), to: idx(s.to), in: idx(s.in), options: s.options ?? {}, on: true }));
 }
 
-function describe(l: Link, names: string[]) {
-  if (l.type === "graphql") return `GraphQL: ${names[l.from!]} calls ${names[l.to!]}`;
-  if (l.type === "react-router") return `React Router screens in ${names[l.in!]}`;
-  if (l.type === "bull-queue") return `Bull queues in ${names[l.in!]}`;
-  return `${l.type} in ${names[l.in ?? l.from ?? 0]}`;
+function describe(l: Link, names: (i: number[]) => string[]) {
+  const list = (i: number[]) => names(i).join(", ");
+  if (l.type === "graphql") return `GraphQL: ${list(l.from)} call${names(l.from).length === 1 ? "s" : ""} ${list(l.to)}`;
+  if (l.type === "react-router") return `React Router screens in ${list(l.in)}`;
+  if (l.type === "bull-queue") return `Bull queues in ${list(l.in)}`;
+  return `${l.type} in ${list([...l.in, ...l.from])}`;
+}
+
+/** A link still makes sense once removed repos are taken out of it. */
+function live(l: Link, kept: (i: number[]) => number[]) {
+  return l.type === "graphql" ? kept(l.from).length > 0 && kept(l.to).length > 0 : kept([...l.in, ...l.from]).length > 0;
 }
 
 export function AddProjectDialog({ open, onOpenChange }: { open: boolean; onOpenChange(open: boolean): void }) {
@@ -36,18 +45,20 @@ export function AddProjectDialog({ open, onOpenChange }: { open: boolean; onOpen
   const { job } = useJob<Inspection>(api, jobId, 500);
   const [repos, setRepos] = useState<InspectedRepo[]>([]);
   const [links, setLinks] = useState<Link[]>([]);
+  const [removed, setRemoved] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!open) {
-      setStep("sources"); setProject(""); setSources([""]); setJobId(null); setRepos([]); setLinks([]); setError(null);
+      setStep("sources"); setProject(""); setSources([""]); setJobId(null); setRepos([]); setLinks([]); setRemoved(new Set()); setError(null);
     }
   }, [open]);
   useEffect(() => {
     if (job?.state === "done" && job.result && step === "sources") {
       setRepos(job.result.repos.map((r) => ({ ...r })));
       setLinks(toLinks(job.result.linkers, job.result.repos));
+      setRemoved(new Set());
       setStep("review");
       setJobId(null);
     } else if (job?.state === "failed") {
@@ -72,6 +83,9 @@ export function AddProjectDialog({ open, onOpenChange }: { open: boolean; onOpen
   };
   const edit = (i: number, patch: Partial<InspectedRepo>) => setRepos((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const names = repos.map((r) => r.name.trim());
+  const kept = (i: number[]) => i.filter((x) => !removed.has(x));
+  const nameList = (i: number[]) => kept(i).map((x) => names[x]);
+  const one = (v: string[]) => (v.length === 1 ? v[0] : v);
 
   const create = async () => {
     setError(null);
@@ -79,16 +93,16 @@ export function AddProjectDialog({ open, onOpenChange }: { open: boolean; onOpen
     try {
       const body = {
         project: project.trim(),
-        repos: repos.map((r) => ({ name: r.name.trim(), role: r.role, source: r.source, path: r.path || null, default_branch: r.default_branch?.trim() || null })),
-        linkers: links.filter((l) => l.on).map((l) => {
+        repos: repos.filter((_, i) => !removed.has(i)).map((r) => ({ name: r.name.trim(), role: r.role, source: r.source, path: r.path || null, default_branch: r.default_branch?.trim() || null })),
+        linkers: links.filter((l) => l.on && live(l, kept)).map((l) => {
           const out: LinkerSpec = { type: l.type };
-          if (l.from !== undefined && l.from >= 0) out.from = names[l.from];
-          if (l.to !== undefined && l.to >= 0) out.to = names[l.to];
-          if (l.in !== undefined && l.in >= 0) out.in = names[l.in];
+          if (l.from.length) out.from = one(nameList(l.from));
+          if (l.to.length) out.to = one(nameList(l.to));
+          if (l.in.length) out.in = one(nameList(l.in));
           if (Object.keys(l.options).length) out.options = l.options;
           return out;
         }),
-        context_docs: repos.flatMap((r) => r.context_docs.map((d) => `${r.name.trim()}:${d}`)),
+        context_docs: repos.filter((_, i) => !removed.has(i)).flatMap((r) => r.context_docs.map((d) => `${r.name.trim()}:${d}`)),
       };
       const p = await api.createProject(body);
       await refresh();
@@ -155,9 +169,15 @@ export function AddProjectDialog({ open, onOpenChange }: { open: boolean; onOpen
         ) : (
           <div className="flex flex-col gap-4">
             <p className="text-sm text-muted">This is what KB found in {project.trim()}. Change anything that's off, then create the project.</p>
-            {repos.map((r, i) => (
+            {repos.map((r, i) => removed.has(i) ? null : (
               <div key={i} className="flex flex-col gap-2 rounded-lg border border-line p-3">
-                <div className="truncate text-xs text-muted" title={r.source}>{r.source}</div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="truncate text-xs text-muted" title={r.source}>{r.source}{r.path ? ` · ${r.path}` : ""}</div>
+                  {repos.length - removed.size > 1 && (
+                    <Button type="button" variant="ghost" size="sm" aria-label={`Remove ${r.name || `repo ${i + 1}`}`}
+                      onClick={() => setRemoved((s) => new Set(s).add(i))}>Remove</Button>
+                  )}
+                </div>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <label className="flex flex-col gap-1 text-xs font-semibold">Name
                     <Input aria-label={`Name of repo ${i + 1}`} value={r.name} onChange={(e) => edit(i, { name: e.target.value })} />
@@ -189,12 +209,13 @@ export function AddProjectDialog({ open, onOpenChange }: { open: boolean; onOpen
               <legend className="mb-1 text-sm font-semibold">How the repos connect</legend>
               {links.length === 0 && <p className="text-xs text-muted">Nothing detected. Maps still work per repo; links between repos won't be drawn.</p>}
               {links.map((l, i) => {
-                const label = describe(l, names);
+                if (!live(l, kept)) return null;
+                const label = describe(l, nameList);
                 return (
                   <div key={i} className="flex flex-wrap items-center gap-2 text-sm">
                     <Checkbox aria-label={label} checked={l.on} onCheckedChange={(v) => setLinks((ls) => ls.map((x, j) => (j === i ? { ...x, on: v === true } : x)))} />
                     <span>{label}</span>
-                    {l.type === "graphql" && (
+                    {l.type === "graphql" && typeof l.options.backend_style !== "object" && (
                       <select aria-label="GraphQL backend style" className="h-8 rounded-lg border border-line bg-surface px-2 text-xs" value={String(l.options.backend_style ?? "sdl")}
                         onChange={(e) => setLinks((ls) => ls.map((x, j) => (j === i ? { ...x, options: { ...x.options, backend_style: e.target.value } } : x)))}>
                         <option value="sdl">schema files (SDL)</option><option value="graphql-compose">graphql-compose</option>
@@ -207,7 +228,7 @@ export function AddProjectDialog({ open, onOpenChange }: { open: boolean; onOpen
             {error && <p role="alert" className="rounded-lg bg-warn-soft p-3 text-sm text-warn">{error}</p>}
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => { setStep("sources"); setError(null); }}>Back</Button>
-              <Button onClick={() => void create()} disabled={busy || repos.some((r) => !r.name.trim())}>Create project</Button>
+              <Button onClick={() => void create()} disabled={busy || repos.some((r, i) => !removed.has(i) && !r.name.trim())}>Create project</Button>
             </div>
           </div>
         )}

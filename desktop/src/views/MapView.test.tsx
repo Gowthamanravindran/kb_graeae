@@ -134,3 +134,20 @@ test("graph_layout_keeps_each_repo_in_one_column", async () => {
   const xs = new Set(nodes.filter((n) => n.type === "box").map((n) => n.position.x));
   expect(xs.size).toBe(1); // a second column would put the first column's lines behind its boxes
 });
+
+test("graph_layout_stacks_apps_and_services_in_role_columns", async () => {
+  const { graphLayout } = await import("./ConnectionsGraph");
+  const g: Connections = {
+    lanes: [{ id: "web", label: "web", role: "frontend" }, { id: "mobile", label: "mobile", role: "frontend" },
+      { id: "users", label: "users", role: "backend" }, { id: "pay", label: "pay", role: "backend" }, { id: "jobs", label: "Background jobs", role: "jobs" }],
+    nodes: ["web", "web", "mobile", "users", "pay", "jobs"].map((lane, i) => ({ ...CONN.nodes[0], id: `${lane}::m${i}`, lane, routes: [] })),
+    edges: [], unresolved: {},
+  };
+  const { nodes } = graphLayout(g, null, null, () => {});
+  const at = (id: string) => nodes.find((n) => n.id === id)!.position;
+  expect(at("web::m0").x).toBe(at("mobile::m2").x); // every app in the first column
+  expect(at("lane-mobile").y).toBeGreaterThan(at("web::m1").y); // mobile's group sits under web's
+  expect(at("users::m3").x).toBe(at("pay::m4").x);
+  expect(at("users::m3").x).toBeGreaterThan(at("web::m0").x);
+  expect(at("jobs::m5").x).toBeGreaterThan(at("users::m3").x);
+});

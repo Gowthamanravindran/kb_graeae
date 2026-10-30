@@ -22,6 +22,24 @@ npm --prefix desktop run dev     # Vite + Electron; the engine runs as `uv run k
 
 The app keeps its project list in `$KB_HOME/desktop.json` (default `~/.kb`).
 
+### Many repos and services
+
+In `kb.yaml`, a link's `from`, `to` and `in` take one repo or a list:
+
+```yaml
+linkers:
+  - type: graphql
+    from: [sop-web, sop-mobile, sop-editor]
+    to: [sop-backend, payments-svc]          # an operation is matched against all of them
+    options:
+      backend_style: {sop-backend: graphql-compose, payments-svc: sdl}   # or one style for all
+  - type: bull-queue
+    in: [sop-backend, worker-svc]            # a job queued in one service and processed in another links up
+```
+
+An operation counts as unmatched only when no listed service handles it. Several entries can share one folder or
+link with different `path:` values; that is how a monorepo's apps are listed.
+
 ### Adding a project
 
 Choose **Add a project** (on the empty Library, or **Add a project…** in the project menu).
@@ -30,8 +48,11 @@ Choose **Add a project** (on the empty Library, or **Add a project…** in the p
    - a name;
    - a role (frontend or backend);
    - the production branch, chosen from the repo's branches;
-   - for a monorepo, the package to use (for example `packages/sop-web`);
-   - how the repos connect: GraphQL from web to backend (with the backend style), React Router screens and Bull queues.
+   - for a monorepo, **one entry per app**: `sop-fe` gives `sop-web`, `sop-mobile`, `sop-editor` and `sop-commons`, each pointing at its package. Component kits and other libraries with no GraphQL, routes, queues or server are left out. Remove any app you don't want;
+   - how the repos connect, with one link of each kind covering every repo it applies to:
+     - GraphQL from every app that calls it to every service that serves it;
+     - React Router screens in every app that has them;
+     - Bull queues matched across every service that uses them.
 
    Change anything that's off.
 3. **Create project.** KB writes `~/.kb/projects/<name>/kb.yaml` and opens the project. You can still edit that file by hand.

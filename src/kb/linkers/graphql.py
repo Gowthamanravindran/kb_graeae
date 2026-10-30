@@ -39,9 +39,16 @@ class GraphqlLinker:
     type = "graphql"
 
     def run(self, ctx: LinkContext) -> list[CodeEdge]:
-        fe_repo, be_repo = ctx.config.from_, ctx.config.to
-        style = ctx.config.options.get("backend_style", "sdl")
-        resolvers = self._backend(ctx, be_repo, style)
+        # every client app against every service together: an operation is unmatched only when no service has it
+        styles = ctx.config.options.get("backend_style", "sdl")
+        resolvers: dict[str, list[str]] = {}
+        for be_repo in ctx.config.tos():
+            style = styles.get(be_repo, "sdl") if isinstance(styles, dict) else styles
+            for field, ids in self._backend(ctx, be_repo, style).items():
+                resolvers.setdefault(field, []).extend(ids)
+        return [e for fe_repo in ctx.config.froms() for e in self._client(ctx, fe_repo, resolvers)]
+
+    def _client(self, ctx: LinkContext, fe_repo: str, resolvers: dict[str, list[str]]) -> list[CodeEdge]:
         edges: list[CodeEdge] = []
         g = ctx.graph
         root = ctx.checkouts[fe_repo].root

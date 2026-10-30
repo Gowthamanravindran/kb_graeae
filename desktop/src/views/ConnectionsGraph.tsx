@@ -8,7 +8,6 @@ import { Spinner } from "../components/ui/spinner";
 import { cn } from "../lib";
 import { useApp } from "../state";
 
-// one column per repo: wrapping a long repo into two columns sent the inner column's lines behind the outer boxes
 const W = 240, H = 48, GAP = 10, LANE_GAP = 260, HEAD = 52;
 const KIND: Record<string, { label: string; color: string }> = {
   graphql: { label: "GraphQL", color: "#2F5BD3" },
@@ -52,14 +51,23 @@ export function graphLayout(g: Connections, selected: string | null, edgeSel: st
   const focus = selected !== null || edgeSel !== null;
   const nodes: Node[] = [];
   const laneLabel = Object.fromEntries(g.lanes.map((l) => [l.id, l.label]));
-  g.lanes.forEach((l, li) => {
-    const x = li * (W + LANE_GAP);
-    nodes.push({ id: `lane-${l.id}`, type: "lane", position: { x, y: 0 }, data: { label: l.label, role: l.role }, draggable: false, selectable: false, width: W, height: 40 });
-    g.nodes.filter((n) => n.lane === l.id).forEach((n, i) => nodes.push({
-      id: n.id, type: "box", draggable: false, width: W, height: H, position: { x, y: HEAD + i * (H + GAP) },
+  // Three columns by role (apps | services | background jobs); each repo is a labelled group stacked inside
+  // its column. Lines only ever cross the gap between columns, so they never run behind another repo's boxes,
+  // however many apps or services there are.
+  const colOf = (role: string) => (role === "jobs" ? 2 : ["frontend", "web", "mobile"].includes(role) ? 0 : 1);
+  const used = [...new Set(g.lanes.map((l) => colOf(l.role)))].sort();
+  const y = [0, 0, 0];
+  for (const l of g.lanes) {
+    const col = colOf(l.role);
+    const x = used.indexOf(col) * (W + LANE_GAP);
+    nodes.push({ id: `lane-${l.id}`, type: "lane", position: { x, y: y[col] }, data: { label: l.label, role: l.role }, draggable: false, selectable: false, width: W, height: 40 });
+    const mine = g.nodes.filter((n) => n.lane === l.id);
+    mine.forEach((n, i) => nodes.push({
+      id: n.id, type: "box", draggable: false, width: W, height: H, position: { x, y: y[col] + HEAD + i * (H + GAP) },
       data: { node: n, lane: laneLabel[n.lane] ?? n.lane, selected: n.id === selected, dim: focus && !touching.has(n.id), onSelect },
     }));
-  });
+    y[col] += HEAD + mine.length * (H + GAP) + 36;
+  }
   const max = Math.max(1, ...g.edges.map((e) => e.count));
   const edges: Edge[] = g.edges.map((e) => {
     const on = e.id === edgeSel || (!!selected && (e.source === selected || e.target === selected));
@@ -179,7 +187,7 @@ export function ConnectionsGraph({ modules }: { modules: MapModule[] }) {
                 {mod && <Button variant="secondary" onClick={() => go("ask", { askSeed: { question: `How does ${mod.name} work?` } })}>Ask about {mod.name}</Button>}
               </>
             ) : (
-              <p className="text-sm text-muted">Each column is a repo. Lines show the GraphQL calls from one repo to another and the jobs one part queues for another. Pick a box or a line.</p>
+              <p className="text-sm text-muted">Apps on the left, services in the middle, background jobs on the right; each repo is a labelled group. Lines show the GraphQL calls from apps to services and the jobs one part queues for another. Pick a box or a line.</p>
             )}
           </Card>
         </aside>

@@ -116,3 +116,31 @@ test("existing_yaml_still_works", async () => {
   expect(await screen.findByText("cannot read /x/bad.yaml: bad yaml")).toBeInTheDocument();
   delete (window as any).kb;
 });
+
+test("monorepo_apps_each_get_a_card_and_can_be_removed", async () => {
+  const fe = "/Users/me/sop-fe";
+  const two = {
+    repos: [
+      { ...INSPECTED.repos[0], source: fe, kind: "local", name: "sop-web", path: "packages/sop-web" },
+      { ...INSPECTED.repos[0], source: fe, kind: "local", name: "sop-mobile", path: "packages/sop-mobile" },
+      INSPECTED.repos[1],
+    ],
+    linkers: [
+      { type: "graphql", from: ["sop-web", "sop-mobile"], to: "sop-backend", options: { backend_style: "graphql-compose" } },
+      { type: "react-router", in: "sop-web" },
+    ],
+  };
+  const a = api({ job: vi.fn(async (id: string) => ({ id, kind: "inspect", key: null, state: "done", step: "", progress: 1, result: two, error: null, created_at: "" })) });
+  renderApp(<AddProjectDialog open onOpenChange={() => {}} />, a);
+  await userEvent.type(screen.getByLabelText("Project name"), "sop");
+  await userEvent.type(screen.getByLabelText("Repo 1"), fe);
+  await userEvent.click(screen.getByRole("button", { name: "Read repos" }));
+  const links = await screen.findByRole("group", { name: "How the repos connect" });
+  expect(within(links).getByRole("checkbox", { name: "GraphQL: sop-web, sop-mobile call sop-backend" })).toBeChecked();
+  await userEvent.click(screen.getByRole("button", { name: "Remove sop-mobile" }));
+  expect(within(links).getByRole("checkbox", { name: "GraphQL: sop-web calls sop-backend" })).toBeChecked();
+  await userEvent.click(screen.getByRole("button", { name: "Create project" }));
+  const body = vi.mocked(a.createProject).mock.calls[0][0];
+  expect(body.repos.map((r) => [r.name, r.path])).toEqual([["sop-web", "packages/sop-web"], ["sop-backend", null]]);
+  expect(body.linkers[0]).toEqual({ type: "graphql", from: "sop-web", to: "sop-backend", options: { backend_style: "graphql-compose" } });
+});
