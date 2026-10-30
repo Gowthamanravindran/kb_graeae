@@ -258,6 +258,8 @@ def all_calls(tree: tsl.Tree) -> list[Call]:
             prop, obj = fn.child_by_field_name("property"), fn.child_by_field_name("object")
             if prop is None:
                 continue
+            while obj is not None and obj.type == "parenthesized_expression" and obj.named_children:
+                obj = obj.named_children[0]   # `(api).get(…)`
             out.append(Call(_text(prop), _text(obj) if obj is not None else "", named, n.start_point[0] + 1,
                             n.type == "new_expression", obj))
         elif fn.type == "identifier":
@@ -312,14 +314,27 @@ def is_env(n) -> bool:
     return obj is not None and _text(obj) == "process.env"
 
 
-def string_values(tree: tsl.Tree) -> dict[str, str]:
-    """Names bound to a string: `const X = 'a'` and object members `{ X: 'a' }` (topic/queue constant maps)."""
-    out = dict(string_constants(tree))
+def qualified_strings(tree: tsl.Tree) -> dict[str, str]:
+    """`Obj.KEY` -> value for string members of declared objects and enums: `const Topics = { A: 'a' }`,
+    `enum Topics { A = 'a' }` (topic and queue constant maps)."""
+    out: dict[str, str] = {}
     for n in _walk(tree.root_node):
-        if n.type == "pair":
-            k, v = n.child_by_field_name("key"), n.child_by_field_name("value")
-            if k is not None and v is not None and v.type == "string":
-                out.setdefault(_text(k).strip("'\""), _string_value(v))
+        if n.type == "variable_declarator":
+            name, val = n.child_by_field_name("name"), n.child_by_field_name("value")
+            while val is not None and val.type in ("as_expression", "satisfies_expression", "parenthesized_expression"):
+                val = val.named_children[0] if val.named_children else None
+            if name is None or val is None or name.type != "identifier" or val.type != "object":
+                continue
+            for c in val.named_children:
+                k, v = c.child_by_field_name("key"), c.child_by_field_name("value")
+                if c.type == "pair" and k is not None and v is not None and v.type == "string":
+                    out[f"{_text(name)}.{_text(k).strip(chr(39) + chr(34))}"] = _string_value(v)
+        elif n.type == "enum_declaration":
+            name, body = n.child_by_field_name("name"), n.child_by_field_name("body")
+            for c in body.named_children if body is not None else []:
+                k, v = c.child_by_field_name("name"), c.child_by_field_name("value")
+                if c.type == "enum_assignment" and k is not None and v is not None and v.type == "string":
+                    out[f"{_text(name)}.{_text(k).strip(chr(39) + chr(34))}"] = _string_value(v)
     return out
 
 

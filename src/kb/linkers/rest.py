@@ -10,8 +10,10 @@ object (`api.get`, `this.http.post`, `apiClient.delete`, …), with a string or 
 URLs are compared segment by segment from the end, so a router mounted under `/api` (`app.use('/api', r)`) or a
 client with a base URL still meets: the route's segments must match the end of the call's path, `:id`, `{id}`
 and `${…}` match any one segment, and at least one fixed segment must match. The route matching the most fixed
-segments wins. Calls to a path no route matches are recorded as unresolved; an absolute URL no route matches
-is taken to be an outside service and skipped, as are URLs held in variables.
+segments wins, then the one whose parameters meet the call's (`/users/${id}` -> `/users/:id`, not `/users/me`).
+Calls to a path no route matches are recorded as unresolved; an absolute URL no route matches is taken to be an
+outside service and skipped, as are URLs held in variables. In a repo that both serves and calls, a receiver that
+could be either (`api.get(…)`) is a route only in a file that imports a server library.
 Edges: client file -calls_http-> route node (`<repo>:http:<METHOD> <path>`, kind `http_route`) -served_by->
 handler. Only paths and names are stored, never other source text.
 """
@@ -19,6 +21,7 @@ handler. Only paths and names are stored, never other source text.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 
 from kb.graph.model import CodeEdge, CodeNode
@@ -29,6 +32,8 @@ METHODS = ("get", "post", "put", "patch", "delete", "head", "options", "all")
 NEST = {"Get": "GET", "Post": "POST", "Put": "PUT", "Patch": "PATCH", "Delete": "DELETE", "Head": "HEAD",
         "Options": "OPTIONS", "All": "ALL"}
 _SERVER = re.compile(r"(^app$|^server$|^api$|^r$|router$|routes$|^fastify$|app$)")
+_SERVER_LIBS = re.compile(rb"""(from|require\()\s*['"](express|koa|@koa/router|koa-router|fastify|restify|@hapi/hapi)['"]""")
+_INLINE = ("arrow_function", "function_expression", "function")
 _CLIENT = re.compile(r"(axios|http|api|client|request|fetcher|ky|got|agent|instance)$")
 _PARAM = re.compile(r"^(:\w+\??|\{\w+\}|\*|\[\.{0,3}\w+\])$")
 
@@ -44,18 +49,20 @@ def segments(path: str) -> list[str]:
     return out
 
 
-def score(route: list[str], call: list[str]) -> int:
-    """Fixed segments that match when the route lines up with the end of the call's path; -1 if it can't."""
+def score(route: list[str], call: list[str]) -> tuple[int, int] | None:
+    """When the route lines up with the end of the call's path: (fixed segments that match, parameters that meet
+    parameters), compared in that order, so `/users/${id}` prefers `/users/:id` to `/users/me`. None if it can't."""
     if not route or len(route) > len(call):
-        return -1
-    fixed = 0
+        return None
+    fixed = params = 0
     for r, c in zip(reversed(route), reversed(call)):
         if r == "*" or c == "*":
+            params += r == c
             continue
         if r != c:
-            return -1
+            return None
         fixed += 1
-    return fixed if fixed else -1
+    return (fixed, params) if fixed else None
 
 
 def _join(*parts: str) -> str:
@@ -98,9 +105,10 @@ class RestLinker:
                 for name, line in ts.top_level_names(tree):
                     defs.setdefault(name, []).append((rel, line))
                 routes += self.routes(tree, rel)
+        declared = {(r.file, r.line) for r in routes}   # a repo that both serves and calls: a route isn't a call
         for repo in ctx.config.froms():
             for rel, tree in self._files(ctx, repo):
-                calls += self.calls(tree, rel)
+                calls += [c for c in self.calls(tree, rel) if (c.file, c.line) not in declared]
         return self.edges(ctx, routes, calls, defs)
 
     @staticmethod
@@ -115,13 +123,25 @@ class RestLinker:
 
     def routes(self, tree, rel) -> list[Route]:
         out = []
+        server_file = bool(_SERVER_LIBS.search(tree.root_node.text or b""))
         for c in ts.all_calls(tree):
             if c.is_new or not c.args:
                 continue
             last = c.receiver.split(".")[-1].lower()
+            # `api` may be an Express router or an axios client: only a route in a file that uses a server library
+            if _SERVER.search(last) and _CLIENT.search(last) and not server_file:
+                continue
             rn = c.receiver_node
             if c.name in METHODS and rn is not None and rn.type == "call_expression":
-                inner = rn.child_by_field_name("function")   # router.route('/users').get(handler)
+                # router.route('/users').get(a).post(b): walk down the chain to `.route(path)`
+                while rn is not None and rn.type == "call_expression":
+                    fn = rn.child_by_field_name("function")
+                    if fn is None or fn.type != "member_expression" or ts.name_of(fn) not in METHODS:
+                        break
+                    rn = fn.child_by_field_name("object")
+                if rn is None or rn.type != "call_expression":
+                    continue
+                inner = rn.child_by_field_name("function")
                 iargs = rn.child_by_field_name("arguments")
                 if inner is not None and inner.type == "member_expression" and ts.name_of(inner) == "route" \
                         and iargs is not None and iargs.named_children:
@@ -171,8 +191,8 @@ class RestLinker:
                     method = ts.literal(ts.props(c.args[1]).get("method")) if len(c.args) > 1 else None
                     method = method or "GET"
             elif c.name in METHODS and c.name != "all" and c.receiver and \
-                    _CLIENT.search(c.receiver.split(".")[-1].lower().lstrip("$")):
-                url, method = ts.literal(c.args[0]), c.name
+                    _CLIENT.search(c.receiver.split(".")[-1].lower().lstrip("$")) and c.args[-1].type not in _INLINE:
+                url, method = ts.literal(c.args[0]), c.name   # an inline function last means a route, not a call
             if url is None or not (url.startswith("/") or url.startswith("*") or re.match(r"^https?://", url)):
                 continue
             segs = segments(url)
@@ -201,16 +221,29 @@ class RestLinker:
                 edges.append(CodeEdge(src=nid, dst=dst, kind="served_by", origin="linker", label=r.name))
             return nid
 
-        for r in routes:
-            route_node(r)
-        segs = [(r, segments(r.path)) for r in routes]
+        ids = [route_node(r) for r in routes]
+        segs = [segments(r.path) for r in routes]
+        # index each route by its rarest fixed segment and that segment's place from the end, so a call is only
+        # scored against routes that could line up with it
+        freq = Counter(s for ss in segs for s in ss if s != "*")
+        index: dict[tuple[int, str], list[int]] = {}
+        by_place: dict[int, list[int]] = {}
+        for i, ss in enumerate(segs):
+            fixed = [(freq[s], k, s) for k, s in enumerate(reversed(ss), 1) if s != "*"]
+            if fixed:
+                _, k, s = min(fixed)
+                index.setdefault((k, s), []).append(i)
+                by_place.setdefault(k, []).append(i)
         sent: set[tuple[str, str]] = set()
         for c in calls:
             cs = segments(c.path)
-            scored = [(score(s, cs), r) for r, s in segs if r.method in (c.method, "ALL")]
-            best = max((s for s, _ in scored), default=-1)
+            cand: set[int] = set()
+            for k in range(1, len(cs) + 1):
+                cand.update(by_place.get(k, ()) if cs[-k] == "*" else index.get((k, cs[-k]), ()))
+            scored = [(sc, i) for i in cand if routes[i].method in (c.method, "ALL")
+                      and (sc := score(segs[i], cs)) is not None]
             src = ensure_file_node(g, *c.file)
-            if best < 0:
+            if not scored:
                 if c.external:
                     continue
                 if (src, f"{c.method} {c.path}") not in sent:
@@ -218,11 +251,11 @@ class RestLinker:
                     edges.append(CodeEdge(src=src, dst=f"unresolved:http:{c.method} {c.path}", kind="calls_http",
                                           origin="linker", resolved=False, label=f"{c.method} {c.path}"))
                 continue
-            for s, r in scored:
-                nid = route_node(r)
-                if s == best and (src, nid) not in sent:
-                    sent.add((src, nid))
-                    edges.append(CodeEdge(src=src, dst=nid, kind="calls_http", origin="linker", label=r.name))
+            best = max(sc for sc, _ in scored)
+            for sc, i in scored:
+                if sc == best and (src, ids[i]) not in sent:
+                    sent.add((src, ids[i]))
+                    edges.append(CodeEdge(src=src, dst=ids[i], kind="calls_http", origin="linker", label=routes[i].name))
         return edges
 
 

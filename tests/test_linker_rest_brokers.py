@@ -27,10 +27,11 @@ def test_segments_and_score():
     assert segments("https://api.x.com/api/v1/users/${id}?full=1") == ["api", "v1", "users", "*"]
     assert segments("*/users/*/orders") == ["users", "*", "orders"]
     assert segments("/users/:id") == ["users", "*"] and segments("/users/{id}") == ["users", "*"]
-    assert score(["users", "*"], ["api", "users", "*"]) == 1          # mounted under /api
-    assert score(["users", "*"], ["orders", "*"]) == -1
-    assert score(["*"], ["users"]) == -1                               # nothing fixed matched
-    assert score(["api", "users"], ["users"]) == -1                    # the route is longer than the call
+    assert score(["users", "*"], ["api", "users", "*"]) == (1, 1)     # mounted under /api; the id meets :id
+    assert score(["users", "me"], ["users", "*"]) == (1, 0)
+    assert score(["users", "*"], ["orders", "*"]) is None
+    assert score(["*"], ["users"]) is None                             # nothing fixed matched
+    assert score(["api", "users"], ["users"]) is None                  # the route is longer than the call
 
 
 def rest_repos(tmp_path):
@@ -175,3 +176,85 @@ def test_unmatched_absolute_urls_are_outside_services_not_missing_links(tmp_path
     edges = run(RestLinker(), c)
     assert linked(edges, c.graph, "calls_http") == [("web:a.ts", "GET /users")]
     assert [e.dst for e in edges if not e.resolved] == ["unresolved:http:GET /api/missing"]
+
+
+# ---------------------------------------------------------------- final review fixes
+
+def test_rest_scales_to_thousands_of_routes_and_calls(tmp_path):
+    import time
+    routes = "".join(f"router.get('/r{i}/items/:id', h{i})\nexport function h{i}() {{}}\n" for i in range(2000))
+    calls = "".join(f"api.get(`/api/r{i}/items/${{id}}`)\n" for i in range(2000))
+    fe = write(tmp_path / "web", {"a.ts": calls})
+    be = write(tmp_path / "svc", {"r.ts": routes})
+    c = ctx({"type": "rest", "from": "web", "to": "svc"}, repos=("web", "svc"), roots={"web": fe, "svc": be})
+    t = time.perf_counter()
+    edges = run(RestLinker(), c)
+    assert time.perf_counter() - t < 10
+    assert len([e for e in edges if e.kind == "calls_http" and e.resolved]) == 2000
+
+
+def test_broker_names_resolve_only_through_declared_constants(tmp_path):
+    a = write(tmp_path / "a", {
+        "src/wrap.ts": "export function publish(topic, m) { return producer.send({ topic, messages: m }) }\n"
+                       "export class P { send() { return producer.send({ topic: this.topic, messages: [] }) } }\n"
+                       "const cfg = { topic: 'user-events' }\n",
+        "src/q.ts": "const q = await channel.assertQueue('')\nchannel.bindQueue(q.queue, 'logs', '')\nchannel.consume(q.queue, onLog)\n",
+    })
+    b = write(tmp_path / "b", {
+        "src/c.ts": "await consumer.subscribe({ topic: 'user-events' })\n",
+        "src/q.ts": "const q = await channel.assertQueue('')\nchannel.bindQueue(q.queue, 'billing', '')\nchannel.consume(q.queue, onBill)\n",
+        "src/p.ts": "channel.publish('billing', '', b)\n",
+    })
+    roots = {"a": a, "b": b}
+    c = ctx({"type": "kafka", "in": ["a", "b"]}, repos=("a", "b"), roots=roots)
+    edges = run(KafkaLinker(), c)
+    assert linked(edges, c.graph, "publishes") == []          # a wrapper's parameter is not 'user-events'
+    c = ctx({"type": "rabbitmq", "in": ["a", "b"]}, repos=("a", "b"), roots=roots)
+    edges = run(RabbitMqLinker(), c)
+    assert not any(e.kind == "publishes" and e.resolved and "a:" in str(c.graph.node(e.dst)) for e in edges)
+    assert not [n for n in c.graph.nodes() if n.kind == "message_topic" and n.name == "queue"]  # server-named queues
+    assert linked(edges, c.graph, "consumed_by") == []                                          # stay unmatched
+
+
+def test_enum_and_object_constants_meet_literals(tmp_path):
+    a = write(tmp_path / "a", {"src/t.ts": "export enum Topics { ORDER_CREATED = 'order.created' }\n"
+                                           "export const Q = { PAID: 'order.paid' }\n",
+                               "src/p.ts": "producer.send({ topic: Topics.ORDER_CREATED, messages: [] })\n"
+                                           "producer.send({ topic: Q.PAID, messages: [] })\n"
+                                           "producer.send({ topic: Other.ORDER_CREATED, messages: [] })\n"})
+    b = write(tmp_path / "b", {"src/c.ts": "consumer.subscribe({ topics: ['order.created', 'order.paid'] })\n"})
+    c = ctx({"type": "kafka", "in": ["a", "b"]}, repos=("a", "b"), roots={"a": a, "b": b})
+    edges = run(KafkaLinker(), c)
+    assert linked(edges, c.graph, "publishes") == [("a:src/p.ts", "Other.ORDER_CREATED"), ("a:src/p.ts", "order.created"),
+                                                   ("a:src/p.ts", "order.paid")]
+
+
+def test_a_parameter_in_the_call_prefers_a_parameter_in_the_route(tmp_path):
+    fe = write(tmp_path / "web", {"a.ts": "axios.get(`/users/${id}`)\n"})
+    be = write(tmp_path / "svc", {"r.ts": "router.get('/users/me', a)\nrouter.get('/users/search', b)\nrouter.get('/users/:id', c)\n"})
+    c = ctx({"type": "rest", "from": "web", "to": "svc"}, repos=("web", "svc"), roots={"web": fe, "svc": be})
+    assert linked(run(RestLinker(), c), c.graph, "calls_http") == [("web:a.ts", "GET /users/:id")]
+
+
+def test_a_service_both_calling_and_serving_does_not_mistake_its_client_for_routes(tmp_path):
+    svc = write(tmp_path / "svc", {
+        "src/client.ts": "import axios from 'axios'\nconst api = axios.create()\n"
+                         "export const f = () => api.get('/remote/thing', { params })\n"
+                         "export const g = (user) => api.post('/remote/users', user)\n",
+        "src/server.ts": "import express from 'express'\nconst api = express.Router()\napi.post('/self/x', saveHandler)\n"
+                         "router.get('/remote/thing', thing)\n",
+    })
+    c = ctx({"type": "rest", "from": "svc", "to": "svc"}, repos=("svc",), roots={"svc": svc})
+    edges = run(RestLinker(), c)
+    routes = sorted(n.name for n in c.graph.nodes() if n.kind == "http_route")
+    assert routes == ["GET /remote/thing", "POST /self/x"]
+    assert linked(edges, c.graph, "calls_http") == [("svc:src/client.ts", "GET /remote/thing")]
+
+
+def test_route_chain_keeps_every_method(tmp_path):
+    be = write(tmp_path / "svc", {"r.ts": "router.route('/books').get(a).post(b).put(c)\n"})
+    fe = write(tmp_path / "web", {"a.ts": "fetch('/books', { method: 'PUT' });\n(api).post('/books')\n"})
+    c = ctx({"type": "rest", "from": "web", "to": "svc"}, repos=("web", "svc"), roots={"web": fe, "svc": be})
+    edges = run(RestLinker(), c)
+    assert sorted(n.name for n in c.graph.nodes() if n.kind == "http_route") == ["GET /books", "POST /books", "PUT /books"]
+    assert linked(edges, c.graph, "calls_http") == [("web:a.ts", "POST /books"), ("web:a.ts", "PUT /books")]

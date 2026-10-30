@@ -66,10 +66,11 @@ linkers:
 - **rabbitmq**: amqplib `sendToQueue` / `consume`, and `publish(exchange, key)` followed through `bindQueue`
   (with `*` and `#` patterns) to the queues it reaches; NestJS patterns as for Kafka.
 
-Topic and queue names written as constants (`Topics.ORDER_CREATED`) are looked up across all the listed repos, so
-a literal in one service meets a constant in another. In the Map's **Graph** view each kind has its own colour;
+Topic and queue names written as constants (`Topics.ORDER_CREATED`, from an object or enum) are looked up across all
+the listed repos, so a literal in one service meets a constant in another. A name held in a function parameter,
+`this.topic` or a config object isn't guessed: it counts as unmatched rather than risk a wrong line. In the Map's **Graph** view each kind has its own colour;
 pick a line to see the calls or messages it stands for. A change to a message handler shows up in test planning
-as "Message <topic>", and an endpoint no screen calls as "API <method> <path>".
+as "Message <topic>", and an endpoint nothing in the analysed repos calls as "API <method> <path>".
 
 ### Adding a project
 

@@ -4,10 +4,11 @@ Each linker scans every repo in `in` for places that send a message and places t
 topic or queue name, and draws `publishes` (sending file -> topic) and `consumed_by` (topic -> handler) edges.
 A topic node is `<repo>:msg:<broker>:<name>`, kind `message_topic`.
 
-Names are matched after resolving constants across all `in` repos, so `producer.send({topic: 'order.created'})` in
-one service meets `consumer.subscribe({topic: Topics.ORDER_CREATED})` in another when `Topics.ORDER_CREATED` is
-`'order.created'`. `process.env.X` is keyed by the variable's name `X`, so two services reading the same setting
-meet. A name held in a variable that can't be resolved is recorded as unresolved, by the variable's name.
+Names are matched after resolving declared constants across all `in` repos, so `producer.send({topic:
+'order.created'})` in one service meets `consumer.subscribe({topic: Topics.ORDER_CREATED})` in another when
+`Topics` is an object or enum declaring `ORDER_CREATED = 'order.created'`. `process.env.X` is keyed by the setting's
+name `X`, so two services reading the same setting meet. A name held in a parameter, `this.x` or a config object
+is recorded as unresolved, by its name; it is never matched on the name alone.
 
 Recognised:
 - kafka: kafkajs `producer.send({topic})` / `sendBatch({topicMessages: [{topic}]})`, `consumer.subscribe({topic |
@@ -49,15 +50,23 @@ class Hit:
 class Scan:
     hits: list[Hit] = field(default_factory=list)
     defs: dict = field(default_factory=dict)
-    strings: dict[str, set[str]] = field(default_factory=dict)  # name -> string values, across all `in` repos
+    qualified: dict[str, set[str]] = field(default_factory=dict)  # `Obj.KEY` -> values, across all `in` repos
+
+
+_CONST = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
+_UPPER = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
 class Keys:
-    def __init__(self, strings: dict[str, set[str]], local: dict[str, str]):
-        self.strings, self.local = strings, local
+    """Turns a topic/queue argument into a name, only through what is declared: a literal; a `const` in the same
+    file; `Obj.KEY` on a declared object or enum (looked up across all `in` repos); `process.env.X`. Parameters,
+    `this.x`, `config.topic` and server-named queues (`q.queue`) stay unresolved, so they never meet a topic
+    that merely shares their name."""
+
+    def __init__(self, qualified: dict[str, set[str]], local: dict[str, str]):
+        self.qualified, self.local = qualified, local
 
     def __call__(self, n) -> tuple[str | None, str]:
-        """(name, ident). A literal is its own name; a constant resolves to its string; `process.env.X` is X."""
         if n is None:
             return None, "?"
         lit = ts.literal(n)
@@ -67,15 +76,19 @@ class Keys:
         nm = ts.name_of(n)
         if not nm:
             return None, "?"
+        if n.type in ("identifier", "shorthand_property_identifier"):
+            return (self.local[nm], nm) if nm in self.local else (None, nm)
         if ts.is_env(n):
             return nm, nm
-        if nm in self.local:
-            return self.local[nm], nm
-        vals = self.strings.get(nm, set())
+        obj = n.child_by_field_name("object") if n.type == "member_expression" else None
+        if obj is None or obj.type != "identifier":
+            return None, nm
+        q = f"{ts.name_of(obj)}.{nm}"
+        vals = self.qualified.get(q, set())
         if len(vals) == 1:
-            return next(iter(vals)), nm
-        if n.type == "member_expression":
-            return nm, nm   # `Topics.ORDER_CREATED` whose value lives outside these repos: match on the name
+            return next(iter(vals)), q
+        if _CONST.match(ts.name_of(obj)) and _UPPER.match(nm):
+            return q, q   # `Topics.ORDER_CREATED` declared outside these repos: both sides must name it the same
         return None, nm
 
 
@@ -106,10 +119,10 @@ class BrokerLinker:
                 files.append((rel, tree))
                 for name, line in ts.top_level_names(tree):
                     scan.defs.setdefault(name, []).append((rel, line))
-                for k, v in ts.string_values(tree).items():
-                    scan.strings.setdefault(k, set()).add(v)
+                for k, v in ts.qualified_strings(tree).items():
+                    scan.qualified.setdefault(k, set()).add(v)
         for rel, tree in files:
-            self.scan(tree, rel, Keys(scan.strings, ts.string_constants(tree)), scan.hits)
+            self.scan(tree, rel, Keys(scan.qualified, ts.string_constants(tree)), scan.hits)
         return self.edges(ctx, scan)
 
     def scan(self, tree, rel: File, keys: Keys, hits: list[Hit]) -> None:  # pragma: no cover - per broker
