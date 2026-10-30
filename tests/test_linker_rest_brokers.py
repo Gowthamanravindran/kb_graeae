@@ -258,3 +258,72 @@ def test_route_chain_keeps_every_method(tmp_path):
     edges = run(RestLinker(), c)
     assert sorted(n.name for n in c.graph.nodes() if n.kind == "http_route") == ["GET /books", "POST /books", "PUT /books"]
     assert linked(edges, c.graph, "calls_http") == [("web:a.ts", "POST /books"), ("web:a.ts", "PUT /books")]
+
+
+# ---------------------------------------------------------------- deferred minors
+
+NEST_HANDLER = "@Controller()\nexport class Events {\n  @EventPattern('order.shipped')\n  shipped(data) {}\n}\n"
+
+
+def test_nest_patterns_belong_to_the_broker_the_repo_uses_and_socket_io_is_not_a_broker(tmp_path):
+    k = write(tmp_path / "k", {"package.json": '{"dependencies": {"kafkajs": "2"}}', "src/e.ts": NEST_HANDLER,
+                               "src/emit.ts": "import { ClientKafka } from '@nestjs/microservices'\nthis.client.emit('order.shipped', x)\n",
+                               "src/ws.ts": "import { Server } from 'socket.io'\nclient.emit('welcome', 1)\n"})
+    r = write(tmp_path / "r", {"package.json": '{"dependencies": {"amqplib": "0"}}', "src/e.ts": NEST_HANDLER})
+    roots = {"k": k, "r": r}
+    c = ctx({"type": "kafka", "in": ["k", "r"]}, repos=("k", "r"), roots=roots)
+    edges = run(KafkaLinker(), c)
+    assert sorted(e.dst for e in edges if e.kind == "consumed_by") == ["k:src/e.ts#Events.shipped"]
+    assert [n.name for n in c.graph.nodes() if n.kind == "message_topic"] == ["order.shipped"]   # no 'welcome'
+    c = ctx({"type": "rabbitmq", "in": ["k", "r"]}, repos=("k", "r"), roots=roots)
+    edges = run(RabbitMqLinker(), c)
+    assert sorted(e.dst for e in edges if e.kind == "consumed_by") == ["r:src/e.ts#Events.shipped"]
+
+
+def test_fallbacks_and_object_patterns(tmp_path):
+    a = write(tmp_path / "a", {"src/p.ts": "producer.send({ topic: process.env.ORDERS_TOPIC || 'orders', messages: [] })\n"
+                                           "producer.send({ topic: cfg.topic ?? 'audit', messages: [] })\n",
+                               "src/n.ts": "@Controller()\nexport class M {\n  @MessagePattern({ cmd: 'sum' })\n  sum(d) {}\n}\n"
+                                           "import { ClientProxy } from '@nestjs/microservices'\nthis.client.send({ cmd: 'sum' }, [1])\n"})
+    c = ctx({"type": "kafka", "in": "a"}, repos=("a",), roots={"a": a})
+    edges = run(KafkaLinker(), c)
+    assert sorted(n.name for n in c.graph.nodes() if n.kind == "message_topic") == ["ORDERS_TOPIC", "audit", "cmd=sum"]
+    assert ("a:src/n.ts", "cmd=sum") in linked(edges, c.graph, "publishes")
+    assert any(e.kind == "consumed_by" and e.dst == "a:src/n.ts#M.sum" for e in edges)
+
+
+def test_sqs_params_in_a_variable_and_hapi_route_lists(tmp_path):
+    a = write(tmp_path / "a", {"src/s.ts": "const params = { QueueUrl: 'https://sqs/1/jobs', MessageBody: b }\n"
+                                           "sqs.sendMessage(params).promise()\n"})
+    b = write(tmp_path / "b", {"src/r.ts": "const ch = 1\nsqs.receiveMessage({ QueueUrl: 'https://sqs/1/jobs' })\n"})
+    c = ctx({"type": "sqs", "in": ["a", "b"]}, repos=("a", "b"), roots={"a": a, "b": b})
+    assert linked(run(SqsLinker(), c), c.graph, "publishes") == [("a:src/s.ts", "jobs")]
+    fe = write(tmp_path / "web", {"x.ts": "fetch('/things');\naxios.delete('/things/1')\n"})
+    be = write(tmp_path / "svc", {"r.ts": "import Hapi from '@hapi/hapi'\nserver.route([\n"
+                                          "  { method: 'GET', path: '/things', handler: listThings },\n"
+                                          "  { method: ['DELETE', 'PATCH'], path: '/things/{id}', handler: (r) => 1 },\n])\n"})
+    c = ctx({"type": "rest", "from": "web", "to": "svc"}, repos=("web", "svc"), roots={"web": fe, "svc": be})
+    edges = run(RestLinker(), c)
+    assert sorted(n.name for n in c.graph.nodes() if n.kind == "http_route") == [
+        "DELETE /things/{id}", "GET /things", "PATCH /things/{id}"]
+    assert linked(edges, c.graph, "calls_http") == [("web:x.ts", "DELETE /things/{id}"), ("web:x.ts", "GET /things")]
+
+
+def test_merchant_is_not_a_channel(tmp_path):
+    a = write(tmp_path / "a", {"src/m.ts": "merchant.consume('orders', f)\npubChannel.sendToQueue('orders', b)\n"})
+    c = ctx({"type": "rabbitmq", "in": "a"}, repos=("a",), roots={"a": a})
+    edges = run(RabbitMqLinker(), c)
+    assert linked(edges, c.graph, "publishes") == [("a:src/m.ts", "orders")]
+    assert not [e for e in edges if e.kind == "consumed_by" and e.resolved]
+
+
+def test_exchange_types_and_unknown_binding_patterns(tmp_path):
+    a = write(tmp_path / "a", {"src/x.ts": (
+        "ch.assertExchange('events', 'fanout')\nch.assertExchange('jobs', 'direct')\n"
+        "ch.bindQueue('audit', 'events', 'anything')\nch.bindQueue('mail', 'events', '')\n"
+        "ch.bindQueue('resize', 'jobs', 'image.*')\nch.bindQueue('thumbs', 'jobs', 'image.thumb')\n"
+        "ch.bindQueue('dyn', 'logs', cfg.pattern)\nch.bindQueue('err', 'logs', 'error')\n"
+        "ch.publish('events', 'user.created', b)\nch.publish('jobs', 'image.thumb', b)\nch.publish('logs', 'info', b)\n")})
+    c = ctx({"type": "rabbitmq", "in": "a"}, repos=("a",), roots={"a": a})
+    pubs = linked(run(RabbitMqLinker(), c), c.graph, "publishes")
+    assert pubs == [("a:src/x.ts", "audit"), ("a:src/x.ts", "logs/info"), ("a:src/x.ts", "mail"), ("a:src/x.ts", "thumbs")]

@@ -54,17 +54,23 @@ linkers:
 ```
 
 - **rest**: `fetch`, `axios` and client objects (`api.get`, `this.http.post`, …) in `from` are matched to Express,
-  Koa-router, Fastify and NestJS (`@Controller` + `@Get`) routes in `to`. Paths are compared from the end, so a
+  Koa-router, Fastify, hapi and NestJS (`@Controller` + `@Get`) routes in `to`. Paths are compared from the end, so a
   router mounted under `/api` or a client with a base URL still meets; `:id`, `{id}` and `${…}` match any part.
   The route matching the most fixed parts wins. A path no route serves counts as unmatched; a full URL no route
   serves is taken to be an outside service (Stripe, Google…) and left out. URLs held in variables are skipped.
 - **kafka**: kafkajs `producer.send({topic})` to `consumer.subscribe({topic(s)})`, with the handler given to
   `consumer.run({eachMessage})`; NestJS `@EventPattern` / `@MessagePattern` and `client.emit`.
 - **sqs**: AWS SDK `SendMessageCommand` / `ReceiveMessageCommand` (and v2 `sendMessage` / `receiveMessage`),
-  `sqs-consumer` and `sqs-producer`. Queues are matched by name (the last part of the queue URL), or by the
+  `sqs-consumer` and `sqs-producer` (parameters may be in a variable declared in the same file). Queues are matched by name (the last part of the queue URL), or by the
   setting that holds the URL (`process.env.EMAIL_QUEUE_URL`) when both sides read the same one.
-- **rabbitmq**: amqplib `sendToQueue` / `consume`, and `publish(exchange, key)` followed through `bindQueue`
-  (with `*` and `#` patterns) to the queues it reaches; NestJS patterns as for Kafka.
+- **rabbitmq**: amqplib `sendToQueue` / `consume`, and `publish(exchange, key)` followed through `bindQueue` to the
+  queues it reaches, by the exchange's type from `assertExchange` (fanout: every bound queue; direct: the same
+  key; topic: `*` and `#` patterns); NestJS patterns as for Kafka.
+
+NestJS `@EventPattern` / `@MessagePattern` handlers are counted for a broker only in repos whose `package.json` uses
+it (kafkajs, amqplib…), so they aren't drawn twice; `client.emit` only counts in files importing
+`@nestjs/microservices`, so socket.io isn't mistaken for a broker. `process.env.T || 'orders'` uses the setting,
+else the default, and `{ cmd: 'sum' }` patterns are matched as `cmd=sum`.
 
 Topic and queue names written as constants (`Topics.ORDER_CREATED`, from an object or enum) are looked up across all
 the listed repos, so a literal in one service meets a constant in another. A name held in a function parameter,

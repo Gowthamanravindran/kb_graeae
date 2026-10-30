@@ -2,7 +2,7 @@
 
 Server routes:
 - Express / Koa-router / Fastify style: `app.get('/users/:id', handler)`, `router.post(...)`,
-  `router.route('/users').get(handler)`, `fastify.route({method, url, handler})`;
+  `router.route('/users').get(handler)`, `fastify.route({method, url, handler})`, hapi `server.route([...])`;
 - NestJS: `@Controller('users')` with `@Get(':id')`, `@Post()`, … on its methods.
 Client calls: `fetch(url, {method})`, `axios(url | {url, method})`, `axios.get(url)` and the same on any client
 object (`api.get`, `this.http.post`, `apiClient.delete`, …), with a string or template URL.
@@ -154,10 +154,18 @@ class RestLinker:
                 if path is not None and path.startswith("/") and len(c.args) >= 2:
                     out.append(Route(c.name.upper(), path, rel, c.line, _name(c.args[-1])))
             elif c.name == "route" and _SERVER.search(last):
-                p = ts.props(c.args[0])
-                path, method = ts.literal(p.get("url") or p.get("path")), ts.literal(p.get("method"))
-                if path and path.startswith("/"):
-                    out.append(Route((method or "ALL").upper(), path, rel, c.line, _name(p.get("handler"))))
+                # fastify.route({method, url, handler}); hapi server.route({…} or [{…}, …]), method may be a list
+                a = c.args[0]
+                for obj in (a.named_children if a.type == "array" else [a]):
+                    p = ts.props(obj)
+                    path = ts.literal(p.get("url") or p.get("path"))
+                    m = p.get("method")
+                    methods = [ts.literal(x) for x in m.named_children] if m is not None and m.type == "array" \
+                        else [ts.literal(m)]
+                    if path and path.startswith("/"):
+                        for meth in methods:
+                            verb = "ALL" if meth in (None, "*") else meth.upper()
+                            out.append(Route(verb, path, rel, obj.start_point[0] + 1, _name(p.get("handler"))))
         for m in ts.decorated_methods(tree):
             if "Controller" not in m.cls_decorators:
                 continue

@@ -338,6 +338,17 @@ def qualified_strings(tree: tsl.Tree) -> dict[str, str]:
     return out
 
 
+def local_objects(tree: tsl.Tree) -> dict:
+    """Names bound to an object literal in this file (`const params = { QueueUrl: … }`): name -> object node."""
+    out = {}
+    for n in _walk(tree.root_node):
+        if n.type == "variable_declarator":
+            name, val = n.child_by_field_name("name"), n.child_by_field_name("value")
+            if name is not None and val is not None and name.type == "identifier" and val.type == "object":
+                out[_text(name)] = val
+    return out
+
+
 @dataclass
 class DecoratedMethod:
     cls: str
