@@ -34,7 +34,13 @@ class DesignResult(BaseModel):
     written: int = 0
     failed: int = 0
     extras: int = 0
+    extras_from_conflicts: int = 0  # cases a teammate had already written (kept as suggested extras)
+    warnings: list[str] = Field(default_factory=list)
     coverage: Coverage = Field(default_factory=Coverage)
+
+
+OFFLINE = "Offline: these cases are not reserved and may duplicate a teammate's"
+RENEW_EVERY = 600.0  # seconds: reservations and trace locks are renewed this often while a run lasts
 
 
 class DesignState(TypedDict, total=False):
@@ -62,6 +68,11 @@ class _Ctx:
     commits: str = ""
     total: int = 0
     done: list[str] = field(default_factory=list)
+    client: Any = None          # a RegistryClient when the plan is shared with the team
+    shared: bool = False
+    offline: bool = False
+    traces_held: set = field(default_factory=set)  # (flow id, side)
+    conflicts: int = 0
 
 
 def _checkouts(ctx: _Ctx, cs) -> tuple[dict, dict]:
@@ -104,12 +115,37 @@ def _trace_path(ctx: _Ctx, flow_id: str, side: str) -> Path:
 
 
 def _cached_trace(ctx: _Ctx, flow_id: str, side: str, make) -> Flow:
+    """A trace is made once per plan and commits. On a shared plan a teammate's trace (pulled with the plan) is
+    reused; otherwise this run takes the flow's trace lock first, so two people never pay for the same trace."""
+    from kb.sync.client import TraceBusy
+    from kb.errors import RegistryUnavailable
+
     p = _trace_path(ctx, flow_id, side)
     if p.exists():
         return Flow.model_validate_json(p.read_text())
+    online = ctx.shared and not ctx.offline
+    if online:
+        try:
+            ctx.client.lock_trace(ctx.cfg.project, ctx.label, ctx.pid, flow_id, side)
+            ctx.traces_held.add((flow_id, side))
+        except TraceBusy as e:
+            name = next((w.flow.name for w in ctx.works.values() if w.flow.id == flow_id), flow_id)
+            raise KbError(f"{e.holder} is tracing {name}; try again in a few minutes") from e
+        except RegistryUnavailable:
+            ctx.offline = online = False
     f = make()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(f.model_dump_json())
+    if ctx.shared:
+        from kb.testplan import shared
+
+        shared.publish_traces_and_scenarios(ctx.cfg, ctx.label, ctx.pid, ctx.store, ctx.client, {p.stem: f}, [])
+        if online:
+            try:
+                ctx.client.unlock_trace(ctx.cfg.project, ctx.label, ctx.pid, flow_id, side)
+            except RegistryUnavailable:
+                pass
+            ctx.traces_held.discard((flow_id, side))
     return f
 
 
@@ -127,6 +163,8 @@ def plan_work(state: DesignState, ctx: _Ctx, counts: dict, cap: int | None, only
         chosen = [s for s in slots if s.id in only and s.status in ("planned", "failed", "stale")]
     else:
         chosen = select(slots, impact.flows, counts, cap, statuses)
+    if ctx.shared and not ctx.offline:
+        chosen = _reserve_shared(ctx, chosen, counts, cap, only, flow_ids, statuses)
     if not chosen:
         return {"work_ids": []}
     ids = {s.id for s in chosen}
@@ -154,6 +192,25 @@ def plan_work(state: DesignState, ctx: _Ctx, counts: dict, cap: int | None, only
     return {"work_ids": list(ctx.works)}
 
 
+def _reserve_shared(ctx: _Ctx, local_choice, counts, cap, only, flow_ids, statuses) -> list[CaseSlot]:
+    """Ask the registry for the slots (it hands out each slot to one person only). Offline: fall back to the local
+    choice, warn, and write the cases as unreserved."""
+    from kb.errors import RegistryUnavailable
+    from kb.testplan import shared
+
+    try:
+        if only:
+            granted = shared.reserve(ctx.cfg, ctx.label, ctx.pid, ctx.store, ctx.client, slot_ids=sorted(only))
+        else:
+            granted = shared.reserve(ctx.cfg, ctx.label, ctx.pid, ctx.store, ctx.client,
+                                     counts={k: v for k, v in counts.items() if v}, per_flow_cap=cap, flow_ids=flow_ids)
+    except RegistryUnavailable:
+        ctx.offline = True
+        return local_choice
+    by_id = {s.id: s for s in ctx.ps.load_slots(ctx.cfg.project, ctx.label, ctx.pid)}
+    return [by_id[i] for i in granted if i in by_id]
+
+
 def fan_out(state: DesignState):
     return [Send("flow", {"flow_id": fid}) for fid in state.get("work_ids", [])] or ["merge"]
 
@@ -176,11 +233,16 @@ def flow_node(state: DesignState, ctx: _Ctx) -> dict:
             scen = write_scenarios(w, slots, existing)
             for s in scen:
                 ctx.ps.save_scenario(project, label, pid, s)
+            if ctx.shared:
+                from kb.testplan import shared
+
+                shared.publish_traces_and_scenarios(ctx.cfg, label, pid, ctx.store, ctx.client, {}, scen)
             cases, extras, failed = write_cases(w, scen, slots)
             kept, rejected = check_cases(cases, [s for s in slots if s.id not in failed])
             ids = {}
-            for c in kept:
-                c.id = ctx.ps.next_case_id(project, label, pid)
+            new_ids = _case_ids(ctx, len(kept))
+            for c, cid in zip(kept, new_ids):
+                c.id = cid
                 ids[c.slot_id] = c.id
                 ctx.ps.save_case(project, label, pid, c)
 
@@ -201,6 +263,13 @@ def flow_node(state: DesignState, ctx: _Ctx) -> dict:
             for c in kept:
                 if c.id in orphans:
                     ctx.ps.save_case(project, label, pid, c.model_copy(update={"status": "obsolete"}))
+            if ctx.shared:
+                from kb.testplan import shared
+
+                live = [c for c in kept if c.id not in orphans]
+                res = shared.publish_cases(ctx.cfg, label, pid, live, ctx.store, ctx.client)
+                ctx.conflicts += len(res.extras)
+                orphans += res.extras  # a teammate wrote these slots first: they became suggested extras
         ctx.done.append(fid)
         return {"results": [{"flow_id": fid, "written": len(kept) - len(orphans), "failed": len(failed),
                              "extras": [e.model_dump(mode="json") for e in extras]}]}
@@ -213,8 +282,28 @@ def flow_node(state: DesignState, ctx: _Ctx) -> dict:
                 if s.id in mine and s.status == "reserved":
                     s.status, s.fail_reason, s.reserved_by = "failed", reason, None
         ctx.ps.update_slots(project, label, pid, fail)
+        if ctx.shared and not ctx.offline:
+            _give_back(ctx, mine)
         ctx.done.append(fid)
         return {"results": [{"flow_id": fid, "written": 0, "failed": len(slots), "extras": [], "error": reason}]}
+
+
+def _case_ids(ctx: _Ctx, n: int) -> list[str]:
+    if ctx.shared:
+        from kb.testplan import shared
+
+        return shared.new_case_ids(ctx.cfg, ctx.label, ctx.pid, ctx.client, n)
+    return [ctx.ps.next_case_id(ctx.cfg.project, ctx.label, ctx.pid) for _ in range(n)]
+
+
+def _give_back(ctx: _Ctx, slot_ids) -> None:
+    from kb.errors import RegistryUnavailable
+
+    if slot_ids:
+        try:
+            ctx.client.release(ctx.cfg.project, ctx.label, ctx.pid, sorted(slot_ids))
+        except RegistryUnavailable:
+            pass
 
 
 def merge(state: DesignState, ctx: _Ctx) -> dict:
@@ -229,8 +318,12 @@ def merge(state: DesignState, ctx: _Ctx) -> dict:
                 continue
             seen.add(key)
             c = TestCase.model_validate(e)
-            c.id = ctx.ps.next_case_id(ctx.cfg.project, ctx.label, ctx.pid)
+            c.id = _case_ids(ctx, 1)[0]
             ctx.ps.save_case(ctx.cfg.project, ctx.label, ctx.pid, c)
+            if ctx.shared:
+                from kb.testplan import shared
+
+                shared.publish_cases(ctx.cfg, ctx.label, ctx.pid, [c], ctx.store, ctx.client)
             n_extras += 1
     res = DesignResult(written=sum(r["written"] for r in state.get("results", [])),
                        failed=sum(r["failed"] for r in state.get("results", [])), extras=n_extras)
@@ -260,12 +353,47 @@ def coverage_node(state: DesignState, ctx: _Ctx) -> dict:
     return {"result": res}
 
 
+class _Renewer:
+    """Keeps a run's reservations and trace locks alive (renewed every RENEW_EVERY seconds) until it ends."""
+
+    def __init__(self, ctx: _Ctx):
+        import threading
+
+        self.ctx, self.done = ctx, threading.Event()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def _loop(self) -> None:
+        from kb.errors import KbError as _E
+
+        ctx = self.ctx
+        while not self.done.wait(RENEW_EVERY):
+            try:
+                if ctx.reserved and not ctx.offline:
+                    ctx.client.renew(ctx.cfg.project, ctx.label, ctx.pid, sorted(ctx.reserved))
+                for flow_id, side in list(ctx.traces_held):
+                    ctx.client.lock_trace(ctx.cfg.project, ctx.label, ctx.pid, flow_id, side)
+            except _E:
+                pass  # offline or busy: the next round tries again
+
+    def stop(self) -> None:
+        self.done.set()
+        self.thread.join(timeout=5)
+
+
 def run_design(cfg, plan_id: str, label: str, store, provider, tracer, mode: Mode, counts: dict[str, int],
                per_flow_cap: int | None, progress=None, author: str = "unknown", only: set[str] | None = None,
-               flow_ids: list[str] | None = None) -> DesignResult:
+               flow_ids: list[str] | None = None, client=None) -> DesignResult:
     ctx = _Ctx(cfg=cfg, store=store, ps=PlanStore(store), pid=plan_id, label=label, mode=mode, provider=provider,
                tracer=tracer, author=author, report=progress or (lambda text, frac: None))
+    ctx.client = client
+    ctx.shared = client is not None and ctx.ps.load_change_set(cfg.project, label, plan_id).shared
     provider.check()
+    if ctx.shared:
+        from kb.testplan import shared
+
+        ctx.report("Syncing with the team", 0.02)
+        ctx.offline = shared.sync(cfg, label, plan_id, store, client).offline
     g = StateGraph(DesignState)
     g.add_node("plan_work", lambda s: plan_work(s, ctx, counts, per_flow_cap, only, flow_ids))
     g.add_node("flow", lambda s: flow_node(s, ctx))
@@ -284,8 +412,11 @@ def run_design(cfg, plan_id: str, label: str, store, provider, tracer, mode: Mod
         ctx.ps.update_slots(cfg.project, label, plan_id, fn)
 
     # One design job per plan runs at a time (the job key), so anything still "reserved" is left over from
-    # a run that died (engine killed, app quit): give it back.
-    release()
+    # a run that died (engine killed, app quit): give it back. On a shared plan "reserved" is the registry's
+    # view (teammates' work too), so the registry's expiry does this instead.
+    if not ctx.shared:
+        release()
+    renewer = _Renewer(ctx) if ctx.shared else None
     try:
         with tracer.trace("testplan_design", {"project": cfg.project, "plan": plan_id, "mode": mode}) as root:
             state = g.compile().invoke({"results": []}, config={"callbacks": tracer.langgraph_callbacks()})
@@ -293,7 +424,23 @@ def run_design(cfg, plan_id: str, label: str, store, provider, tracer, mode: Mod
             root.end(output=res.model_dump())
     except BaseException:
         release(ctx.reserved)
+        if ctx.shared and not ctx.offline:
+            _give_back(ctx, ctx.reserved)
         raise
+    finally:
+        if renewer is not None:
+            renewer.stop()
+    if ctx.shared:
+        res.extras_from_conflicts = ctx.conflicts
+        written = {s.id for s in ctx.ps.load_slots(cfg.project, label, plan_id) if s.status == "written"}
+        if not ctx.offline:
+            _give_back(ctx, ctx.reserved - written)
+        if ctx.offline:
+            res.warnings.append(OFFLINE)
+        from kb.testplan import shared
+
+        shared.sync(cfg, label, plan_id, store, client)
+        res.coverage = coverage_for(ctx.ps, cfg.project, label, plan_id)
     tracer.flush()
     ctx.report("Done", 1.0)
     return res

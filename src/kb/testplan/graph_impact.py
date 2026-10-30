@@ -52,9 +52,12 @@ def build_impact_graph(deps: ImpactDeps):
     return g.compile()
 
 
-def run_impact(cfg, req: ChangeSetRequest, store, provider, tracer, progress=None, author: str = "unknown") -> ImpactReport:
+def run_impact(cfg, req: ChangeSetRequest, store, provider, tracer, progress=None, author: str = "unknown",
+               client=None) -> ImpactReport:
+    """`client`: a RegistryClient; when the plan is shared, the updated slots are re-shared with the team."""
     deps = ImpactDeps(cfg=cfg, store=store, provider=provider, tracer=tracer, author=author,
                       report=progress or (lambda text, frac: None))
+    deps.extra["client"] = client
     with tracer.trace("testplan_impact", {"project": cfg.project}) as root:
         state = build_impact_graph(deps).invoke({"request": req}, config={"callbacks": tracer.langgraph_callbacks()})
         root.end(output={"flows": len(state["impact"].flows), "inventory": len(state["impact"].inventory)})

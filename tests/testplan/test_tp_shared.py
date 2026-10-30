@@ -116,3 +116,93 @@ def test_pull_requires_the_base_pack(team, tmp_path):
     shared.share(team.cfg, L, team.pid, team.a, team.client("maint@x"))
     with pytest.raises(KbError, match=f"Pull {L} first"):
         shared.pull(team.cfg, L, team.pid, PackStore(tmp_path / "home-c"), team.client("contrib@x"))
+
+
+# ---------------------------------------------------------------- Task 5: generation in shared mode
+
+from kb.testplan.graph_design import run_design  # noqa: E402
+
+
+def _shared(team):
+    ca, cb = team.client("maint@x"), team.client("contrib@x")
+    shared.share(team.cfg, L, team.pid, team.a, ca)
+    shared.pull(team.cfg, L, team.pid, team.b, cb)
+    return ca, cb
+
+
+def _gen(team, store, client, counts, provider=None):
+    return run_design(team.cfg, team.pid, L, store, provider or DesignFake(), RecordingTracer(), "pr", counts, None,
+                      client=client)
+
+
+def test_two_users_split_generation_without_overlap(team):
+    ca, cb = _shared(team)
+    ra = _gen(team, team.a, ca, {"P0": 2})
+    pb = DesignFake()
+    rb = _gen(team, team.b, cb, {"P0": 2}, pb)
+    assert (ra.written, rb.written, ra.extras_from_conflicts, rb.extras_from_conflicts) == (2, 2, 0, 0)
+    assert not any("How does:" in r.prompt for r in pb.requests)  # B reused A's shared traces: no Claude trace call
+    for store, client in ((team.a, ca), (team.b, cb)):
+        shared.sync(team.cfg, L, team.pid, store, client)
+        cases = [c for c in PlanStore(store).cases(P, L, team.pid) if not c.suggested]
+        assert len(cases) == 4 and len({c.slot_id for c in cases}) == 4 and len({c.id for c in cases}) == 4
+    view = ca.plan(P, L, team.pid)
+    assert sum(1 for s in view["slots"] if s["status"] == "written") == 4
+    assert not any(s["status"] == "reserved" for s in view["slots"])  # nothing left held
+
+
+def test_busy_trace_fails_only_that_flow(team):
+    ca, cb = _shared(team)
+    flow = PlanStore(team.b).load_impact(P, L, team.pid).flows[0]
+    ca.lock_trace(P, L, team.pid, flow.id, "base")
+    res = _gen(team, team.b, cb, {"P0": 2})
+    assert res.written == 0 and res.failed == 2
+    failed = [s for s in PlanStore(team.b).load_slots(P, L, team.pid) if s.status == "failed"]
+    assert failed and all("maint@x is tracing" in s.fail_reason for s in failed)
+    assert not any(s["status"] == "reserved" for s in cb.plan(P, L, team.pid)["slots"])  # given back
+
+
+def test_reservations_renewed_while_running(team, monkeypatch):
+    import time
+
+    from kb.testplan import graph_design, nodes_design
+
+    ca, cb = _shared(team)
+    monkeypatch.setattr(graph_design, "RENEW_EVERY", 0.05)
+    real = nodes_design.write_cases
+    monkeypatch.setattr(graph_design, "write_cases", lambda *a: (time.sleep(0.3), real(*a))[1])
+    renewed = []
+    orig = cb.renew
+    monkeypatch.setattr(cb, "renew", lambda *a, **k: (renewed.append(a), orig(*a, **k))[1])
+    _gen(team, team.b, cb, {"P0": 1})
+    assert renewed
+
+
+def test_impact_rerun_reshares_slots(team):
+    from fixture_repos import HEAD, RESOLVERS, git
+
+    ca, cb = _shared(team)
+    git(team.fx.be, "checkout", "-q", HEAD)
+    f = team.fx.be / RESOLVERS
+    f.write_text(f.read_text().replace("    if (!context.user.isAdmin) {\n      throw new Error('Only admins can add tasks');\n    }\n", ""))
+    git(team.fx.be, "commit", "-qam", "no admin check")
+    git(team.fx.be, "checkout", "-q", "develop")
+    run_impact(team.cfg, ChangeSetRequest(project=P, base=dict(team.fx.base), head=dict(team.fx.head)), team.a,
+               DesignFake(), RecordingTracer(), client=ca)
+    local = {s.id for s in PlanStore(team.a).load_slots(P, L, team.pid)}
+    remote = {s["id"] for s in cb.plan(P, L, team.pid)["slots"]}
+    assert remote == local
+
+
+def test_offline_run_warns_and_marks_unreserved(team, monkeypatch):
+    ca, cb = _shared(team)
+
+    def down(*a, **k):
+        raise RegistryUnavailable("registry unreachable")
+    for m in ("plan", "reserve", "renew", "release", "lock_trace", "unlock_trace", "publish_plan_items", "case_ids"):
+        monkeypatch.setattr(cb, m, down)
+    res = _gen(team, team.b, cb, {"P0": 1})
+    assert res.written == 1
+    assert "Offline: these cases are not reserved and may duplicate a teammate's" in res.warnings
+    [c] = [c for c in PlanStore(team.b).cases(P, L, team.pid) if not c.suggested]
+    assert c.unreserved and shared.pending(team.b, P, L, team.pid) >= 1

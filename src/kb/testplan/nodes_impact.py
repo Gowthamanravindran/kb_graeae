@@ -97,6 +97,10 @@ def resolve_change_set(state: dict, deps: ImpactDeps) -> dict:
                    base={r: BranchRef(branch=b, commit=base_cos[r].commit) for r, b in base.items()},
                    head={r: BranchRef(branch=head[r] or base[r], commit=head_cos[r].commit) for r in base},
                    prs=prs, created_by=deps.author)
+    try:  # a re-run keeps the plan shared with the team
+        cs.shared = PlanStore(deps.store).load_change_set(cfg.project, label, pid).shared
+    except KbError:
+        pass
     PlanStore(deps.store).save_change_set(label, cs)
     return {"change_set": cs, "label": label, "base_cos": base_cos, "head_cos": head_cos, "work": work}
 
@@ -228,6 +232,19 @@ def save_impact(state: dict, deps: ImpactDeps) -> dict:
     previous = ps.load_impact(cs.project, label, cs.id)
     reconcile(ps, cs.project, label, cs.id, state["slots"], previous, report)
     ps.save_impact(cs.project, label, report)
+    client = deps.extra.get("client")
+    if client is not None and cs.shared:
+        from kb.errors import RegistryUnavailable
+        from kb.testplan import shared
+
+        ps.save_change_set(label, cs.model_copy(update={"shared": True}))
+        try:  # the team's copy follows the new commits; its merge keeps everyone's reservations and cases
+            client.share_plan(cs.project, label, cs.id, cs.model_copy(update={"shared": True}).model_dump(mode="json"),
+                              report.model_dump(mode="json"),
+                              [s.model_dump(mode="json") for s in ps.load_slots(cs.project, label, cs.id)])
+            shared.sync(deps.cfg, label, cs.id, deps.store, client)
+        except RegistryUnavailable:
+            deps.extra.setdefault("warnings", []).append("Couldn't update the team's copy: the registry is unreachable")
     deps.report("Impact ready", 1.0)
     return {"impact": report}
 

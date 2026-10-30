@@ -202,11 +202,14 @@ def _apply(cfg, label, plan_id, store, view: dict) -> None:
     ps.save_impact(cfg.project, label, ImpactReport.model_validate(view["impact"]))
     local = {c.id: c for c in ps.cases(cfg.project, label, plan_id)}
     queued = {i["id"] for i in _queued(store, cfg.project, label, plan_id)}
+    mine = {s.id: s for s in ps.load_slots(cfg.project, label, plan_id)}
     slots = []
     for raw in view["slots"]:
         s = CaseSlot.model_validate(raw)
         if s.status == "planned" and any(c.slot_id == s.id and c.id in queued for c in local.values()):
             s.status = "written"  # written here offline, not sent yet
+        elif s.status == "planned" and s.id in mine and mine[s.id].status == "failed":
+            s.status, s.fail_reason = "failed", mine[s.id].fail_reason  # free for the team, but say why it failed here
         slots.append(s)
     ps.save_slots(cfg.project, label, plan_id, slots)
     traces = ps.dir(cfg.project, label, plan_id) / "traces"
