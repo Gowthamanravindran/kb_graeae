@@ -31,24 +31,57 @@ function ago(iso: string | null): string {
   return `${Math.floor(d / 7)} weeks ago`;
 }
 
-function Progress({ jobId, onDone }: { jobId: string; onDone(error: string | null): void }) {
+type Running = { id: string; kind: string }; // id "" = asked for, the engine hasn't answered yet
+const VERB: Record<string, string> = { analyze: "Analysing", pull: "Pulling", push: "Sharing", delete: "Deleting" };
+const RUN_KEY = /^(analyze|pull|push):(.+?)@(.+)$/;
+
+function minutes(iso: string | undefined): string {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (Number.isNaN(t)) return "";
+  const m = Math.floor((Date.now() - t) / 60_000);
+  return m < 1 ? "under a minute" : `${m} min`;
+}
+
+function Bar({ pct, wide }: { pct: number; wide?: boolean }) {
+  return (
+    <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}
+      className={`${wide ? "h-2.5 w-full" : "h-2 max-w-[260px]"} overflow-hidden rounded bg-priv-soft`}>
+      {/* early steps (cloning, checking out) report little progress: pulse so it never looks stuck */}
+      <div className={`h-full bg-accent transition-[width] ${pct < 10 ? "animate-pulse" : ""}`} style={{ width: `${Math.max(pct, 8)}%` }} />
+    </div>
+  );
+}
+
+/** The progress card at the top of the Library: owns the job, and reports when it ends. */
+function RunningCard({ branch, run, onDone }: { branch: string; run: Running; onDone(error: string | null): void }) {
   const { api } = useApp();
-  const { job, done, failed } = useJob(api, jobId);
+  const { job, done, failed } = useJob(api, run.id || null);
   useEffect(() => {
     if (done || failed) onDone(failed ? job?.error ?? "The job failed." : null);
   }, [done, failed]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (failed) return <p className="text-xs text-warn">{job?.error}</p>;
   const pct = Math.round((job?.progress ?? 0) * 100);
+  const label = `${VERB[run.kind] ?? "Working on"} ${branch}`;
+  const since = minutes(job?.created_at);
+  return (
+    <section aria-label={label} className="flex flex-col gap-2.5 rounded-xl border border-accent/30 bg-accent-soft/60 px-5 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5 font-semibold"><Spinner />{label}</div>
+        <div className="text-xs text-muted">{pct}%{since ? ` · ${since}` : ""}</div>
+      </div>
+      <Bar pct={pct} wide />
+      <div className="text-sm text-muted">{job?.step || "Starting…"}</div>
+      {run.kind === "analyze" && <div className="text-xs text-muted">Larger codebases take up to an hour. You can keep using the app; this keeps going.</div>}
+    </section>
+  );
+}
+
+function RowProgress({ jobId }: { jobId: string }) {
+  const { api } = useApp();
+  const { job } = useJob(api, jobId || null);
   return (
     <div>
-      <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} className="h-2 max-w-[260px] overflow-hidden rounded bg-priv-soft">
-        {/* early steps (cloning, checking out) report little progress: pulse so it never looks stuck */}
-        <div className={`h-2 bg-accent ${pct < 10 ? "animate-pulse" : ""}`} style={{ width: `${Math.max(pct, 8)}%` }} />
-      </div>
-      <div className="mt-1.5 flex items-center gap-2 text-xs text-muted">
-        <Spinner />
-        <span>{job?.step || "Starting…"}</span>
-      </div>
+      <Bar pct={Math.round((job?.progress ?? 0) * 100)} />
+      <div className="mt-1.5 flex items-center gap-2 text-xs text-muted"><Spinner /><span>{job?.step || "Starting…"}</span></div>
     </div>
   );
 }
@@ -173,7 +206,8 @@ export function Library() {
   const [data, setData] = useState<BranchesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [jobs, setJobs] = useState<Record<string, string>>({});
+  const [jobs, setJobs] = useState<Record<string, Running>>({}); // started from this screen
+  const [serverJobs, setServerJobs] = useState<Record<string, Running>>({}); // running anywhere (other screens, CLI)
   const [analysing, setAnalysing] = useState(false);
   const [login, setLogin] = useState(false);
   const [dismissed, setDismissed] = useState<string | null>(null);
@@ -189,31 +223,59 @@ export function Library() {
     }
   }, [api, project]);
   useEffect(() => { void load(); }, [load]);
-  const start = async (branch: string, fn: () => Promise<{ job_id: string }>) => {
+  // The jobs list answers in milliseconds (the branch list can take seconds on a big project), so it is what
+  // shows running work at once and keeps watching for work started elsewhere.
+  const poll = useCallback(async () => {
+    if (!project) return;
+    try {
+      const running: Record<string, Running> = {};
+      for (const j of await api.jobs({ active: true })) {
+        const m = j.key ? RUN_KEY.exec(j.key) : null;
+        if (m && m[2] === project) running[m[3]] = { id: j.id, kind: j.kind };
+      }
+      setServerJobs((prev) => {
+        if (Object.keys(prev).some((b) => !running[b])) void load(); // something finished: refresh the rows
+        return running;
+      });
+    } catch {
+      /* the next poll tries again */
+    }
+  }, [api, project, load]);
+  useEffect(() => {
+    void poll();
+    const t = setInterval(() => void poll(), 3000);
+    return () => clearInterval(t);
+  }, [poll]);
+  const start = async (branch: string, kind: string, fn: () => Promise<{ job_id: string }>) => {
+    setJobs((j) => ({ ...j, [branch]: { id: "", kind } })); // shown the moment it's asked for
+    setFailure(null);
     try {
       const { job_id } = await fn();
-      setJobs((j) => ({ ...j, [branch]: job_id }));
-      setFailure(null);
+      setJobs((j) => ({ ...j, [branch]: { id: job_id, kind } }));
       void load();
     } catch (e) {
+      setJobs((j) => { const n = { ...j }; delete n[branch]; return n; });
       if (e instanceof ApiError && e.status === 401) setLogin(true);
       setError(e instanceof ApiError ? e.detail : String(e));
     }
   };
   const finished = (branch: string, failure: string | null) => {
     setJobs((j) => { const n = { ...j }; delete n[branch]; return n; });
+    setServerJobs((j) => { const n = { ...j }; delete n[branch]; return n; });
     if (failure) setFailure(`${branch}: ${failure}`); // the row goes away with the job, so say it up top
     void load();
   };
   const confirmRedo = ({ kind, row }: Redo) => {
     setRedo(null);
-    if (kind === "delete") void start(row.branch, () => api.deleteBranch(project!, row.branch));
-    else void start(row.branch, () => api.analyze(project!, row.branch, false, undefined, kind === "fresh"));
+    if (kind === "delete") void start(row.branch, "delete", () => api.deleteBranch(project!, row.branch));
+    else void start(row.branch, "analyze", () => api.analyze(project!, row.branch, false, undefined, kind === "fresh"));
   };
   if (!project) return <Empty />;
   const known = new Set((data?.rows ?? []).map((r) => r.branch));
-  const pending: BranchRow[] = Object.entries(jobs).filter(([b]) => !known.has(b))
-    .map(([b, id]) => ({ branch: b, local: null, remote: null, state: "in-progress", job_id: id }));
+  const running: Record<string, Running> = { ...serverJobs, ...jobs };
+  for (const r of data?.rows ?? []) if (r.state === "in-progress" && r.job_id && !running[r.branch]) running[r.branch] = { id: r.job_id, kind: "analyze" };
+  const pending: BranchRow[] = Object.entries(running).filter(([b]) => !known.has(b))
+    .map(([b, run]) => ({ branch: b, local: null, remote: null, state: "in-progress", job_id: run.id }));
   const rows = [...pending, ...(data?.rows ?? [])].filter((r) => r.branch.toLowerCase().includes(query.toLowerCase()));
   return (
     <div className="flex flex-col gap-6">
@@ -228,6 +290,9 @@ export function Library() {
           <Button onClick={() => setAnalysing(true)}>Analyse a branch</Button>
         </div>
       </div>
+      {Object.entries(running).map(([b, run]) => (
+        <RunningCard key={b} branch={b} run={run} onDone={(failure) => finished(b, failure)} />
+      ))}
       {failure && (
         <div role="alert" className="flex items-start justify-between gap-4 rounded-lg bg-warn-soft px-4 py-3 text-sm text-warn">
           <span>{failure}</span>
@@ -265,8 +330,9 @@ export function Library() {
             {rows.map((r) => {
               const lo = r.local;
               const commits = lo?.commits ?? r.remote?.commits ?? {};
-              const jobId = jobs[r.branch] ?? (r.state === "in-progress" ? r.job_id : null);
-              const badge = jobId ? BADGE["in-progress"] : BADGE[r.state];
+              const jobId = running[r.branch] ? running[r.branch].id : null;
+              const busy = jobId !== null;
+              const badge = busy ? BADGE["in-progress"] : BADGE[r.state];
               return (
                 <tr key={r.branch} className="border-b border-[#EFEFEC] last:border-0">
                   <td className="px-6 py-4">
@@ -277,8 +343,8 @@ export function Library() {
                     )}
                   </td>
                   <td className="px-4 py-4 font-mono text-xs text-muted">{Object.entries(commits).map(([k, v]) => <div key={k}>{k} {v.slice(0, 12)}</div>)}</td>
-                  {jobId ? (
-                    <td className="px-4 py-4" colSpan={2}><Progress jobId={jobId} onDone={(failure) => finished(r.branch, failure)} /></td>
+                  {busy ? (
+                    <td className="px-4 py-4" colSpan={2}><RowProgress jobId={jobId} /></td>
                   ) : (
                     <>
                       <td className="px-4 py-4 text-[13px]">
@@ -293,20 +359,20 @@ export function Library() {
                   <td className="px-4 py-4"><Badge tone={badge.tone}>{badge.text}</Badge></td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex justify-end gap-2">
-                      {jobId ? null : r.state === "synced" || r.state === "update-available" ? (
+                      {busy ? null : r.state === "synced" || r.state === "update-available" ? (
                         <>
-                          {r.state === "update-available" && <Button variant="secondary" size="sm" onClick={() => void start(r.branch, () => api.pull(project, r.branch, false))}>Pull</Button>}
+                          {r.state === "update-available" && <Button variant="secondary" size="sm" onClick={() => void start(r.branch, "pull", () => api.pull(project, r.branch, false))}>Pull</Button>}
                           <Button variant="secondary" size="sm" onClick={() => go("map", { branch: r.branch })}>Open</Button>
                         </>
                       ) : r.state === "not-pulled" ? (
-                        <Button variant="secondary" size="sm" onClick={() => void start(r.branch, () => api.pull(project, r.branch, false))}>Pull</Button>
+                        <Button variant="secondary" size="sm" onClick={() => void start(r.branch, "pull", () => api.pull(project, r.branch, false))}>Pull</Button>
                       ) : r.state === "local-only" ? (
                         <>
-                          {current?.registry && <Button size="sm" onClick={() => void start(r.branch, () => api.push(project, r.branch))}>Push to registry</Button>}
+                          {current?.registry && <Button size="sm" onClick={() => void start(r.branch, "push", () => api.push(project, r.branch))}>Push to registry</Button>}
                           <Button variant="secondary" size="sm" onClick={() => go("map", { branch: r.branch })}>Open</Button>
                         </>
                       ) : null}
-                      {!jobId && lo && <RowMenu row={r} onPick={(kind) => setRedo({ kind, row: r })} />}
+                      {!busy && lo && <RowMenu row={r} onPick={(kind) => setRedo({ kind, row: r })} />}
                     </div>
                   </td>
                 </tr>
@@ -319,7 +385,7 @@ export function Library() {
         </table>
       </Card>
       <AnalyseDialog open={analysing} onOpenChange={setAnalysing} repos={current?.repos ?? []}
-        onStart={(b, resume, branches) => { set({ branch: b }); void start(b, () => (branches ? api.analyze(project, b, resume, branches) : api.analyze(project, b, resume))); }} />
+        onStart={(b, resume, branches) => { set({ branch: b }); void start(b, "analyze", () => (branches ? api.analyze(project, b, resume, branches) : api.analyze(project, b, resume))); }} />
       <LoginDialog open={login} onOpenChange={setLogin} />
       <RedoDialog redo={redo} onClose={() => setRedo(null)} onConfirm={confirmRedo} />
     </div>

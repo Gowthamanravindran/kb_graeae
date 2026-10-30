@@ -183,3 +183,34 @@ test("busy_branch_delete_error_is_shown", async () => {
   await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
   expect(await screen.findByText(/still running/)).toBeInTheDocument();
 });
+
+test("running_analysis_has_a_progress_card_at_the_top", async () => {
+  const a = api({
+    branches: vi.fn(async () => ({ rows: [], registry_error: null })),
+    analyze: vi.fn(async () => ({ job_id: "jB" })),
+    job: vi.fn(async (id: string) => ({ id, kind: "analyze", key: null, state: "running", step: "Building the code graph", progress: 0.1, result: null, error: null, created_at: new Date(Date.now() - 125_000).toISOString() })),
+  });
+  renderApp(<Library />, a);
+  await userEvent.click(await screen.findByRole("button", { name: "Analyse a branch" }));
+  await userEvent.type(screen.getByLabelText("Branch"), "main");
+  await userEvent.click(screen.getByRole("button", { name: "Start analysis" }));
+  const card = await screen.findByRole("region", { name: "Analysing main" });
+  expect(within(card).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "10");
+  expect(within(card).getByText("Building the code graph")).toBeInTheDocument();
+  expect(within(card).getByText(/10% · 2 min/)).toBeInTheDocument();
+});
+
+test("analysis_started_elsewhere_appears_without_reopening", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  let calls = 0;
+  const a = api({
+    jobs: vi.fn(async () => (++calls > 1 ? [{ id: "jX", kind: "analyze", key: "analyze:sop@production", state: "running", step: "", progress: 0, result: null, error: null, created_at: "" }] : [])),
+    job: vi.fn(async (id: string) => ({ id, kind: "analyze", key: null, state: "running", step: "Checking out code", progress: 0.02, result: null, error: null, created_at: "" })),
+  });
+  renderApp(<Library />, a);
+  await screen.findByText("main", { selector: "div" });
+  expect(screen.queryByRole("region", { name: "Analysing production" })).not.toBeInTheDocument();
+  await vi.advanceTimersByTimeAsync(3_500); // the Library keeps watching the (fast) jobs list
+  expect(await screen.findByRole("region", { name: "Analysing production" })).toBeInTheDocument();
+  vi.useRealTimers();
+});

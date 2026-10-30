@@ -202,6 +202,7 @@ test("add_project_from_repo_folders", async () => {
   await page.getByRole("button", { name: "Analyse a branch" }).click();
   await expect(page.getByLabel("Name for this analysis")).toHaveValue("production");
   await page.getByRole("button", { name: "Start analysis" }).click();
+  await expect(page.getByRole("region", { name: "Analysing production" })).toBeVisible({ timeout: 2_000 });
   const row = page.locator("tr", { has: page.getByText("production", { exact: true }) });
   await expect(row).toBeVisible({ timeout: 5_000 });
   await expect(row.getByText("Private · local only")).toBeVisible({ timeout: 120_000 });
