@@ -251,3 +251,112 @@ def test_cases_written_before_sharing_count_as_written_for_the_team(team):
     written = [s for s in view["slots"] if s["status"] == "written"]
     assert len(written) == 2 and all(s["case_id"].startswith("TC-") for s in written)
     assert not [i for i in view["items"] if i["kind"] == "testcase" and i["payload"].get("suggested")]
+
+
+# ---------------------------------------------------------------- final review fixes
+
+def test_engine_rerun_reshares_a_shared_plan(team, tmp_path):
+    """Critical: the app's and CLI's impact re-run must reach the team, or the next sync reverts it."""
+    from typer.testing import CliRunner
+
+    from fixture_repos import HEAD, RESOLVERS, git
+    from kb.cli import app
+
+    ca, cb = _shared(team)
+    git(team.fx.be, "checkout", "-q", HEAD)
+    f = team.fx.be / RESOLVERS
+    f.write_text(f.read_text() + "\nexport const later = 1;\n")
+    git(team.fx.be, "commit", "-qam", "later")
+    new_head = git(team.fx.be, "rev-parse", "HEAD")
+    git(team.fx.be, "checkout", "-q", "develop")
+    y = tmp_path / "team.kb.yaml"
+    y.write_text(team.fx.cfg_path.read_text() + "registry: http://testserver\n")
+    import os
+    os.environ["KB_HOME"] = str(team.a.kb_home)
+    try:
+        from unittest import mock
+        with mock.patch("kb.sync.client.client_for", lambda *a, **k: team.client("maint@x")), \
+                mock.patch("kb.cli.get_provider", lambda: DesignFake()):
+            args = ["testplan", "pr", str(y)] + [x for r, b in team.fx.base.items() for x in ("--base", f"{r}={b}")] \
+                + [x for r, h in team.fx.head.items() for x in ("--head", f"{r}={h}")]
+            r = CliRunner().invoke(app, args)
+            assert r.exit_code == 0, r.output
+    finally:
+        os.environ.pop("KB_HOME", None)
+    assert ca.plan(P, L, team.pid)["impact"]["head_commits"]["mini-be"] == new_head
+    shared.sync(team.cfg, L, team.pid, team.a, ca)
+    assert PlanStore(team.a).load_impact(P, L, team.pid).head_commits["mini-be"] == new_head
+
+
+def test_stale_and_obsolete_reach_the_team_and_survive_sync(team):
+    from fixture_repos import HEAD, RESOLVERS, git
+
+    ca, cb = _shared(team)
+    _gen(team, team.a, ca, {"P0": 4, "P1": 3, "P2": 2})
+    git(team.fx.be, "checkout", "-q", HEAD)
+    f = team.fx.be / RESOLVERS
+    f.write_text(f.read_text().replace("    if (!context.user.isAdmin) {\n      throw new Error('Only admins can add tasks');\n    }\n", "")
+                 .replace("End date must be after the start date", "End date is before the start"))
+    git(team.fx.be, "commit", "-qam", "drop admin check, reword validation")
+    git(team.fx.be, "checkout", "-q", "develop")
+    run_impact(team.cfg, ChangeSetRequest(project=P, base=dict(team.fx.base), head=dict(team.fx.head)), team.a,
+               DesignFake(), RecordingTracer(), client=ca)
+    local = {s.id: s.status for s in PlanStore(team.a).load_slots(P, L, team.pid)}
+    remote = {s["id"]: s["status"] for s in ca.plan(P, L, team.pid)["slots"]}
+    assert "obsolete" in local.values() and "stale" in local.values()
+    assert remote == local
+    shared.pull(team.cfg, L, team.pid, team.b, cb)   # a teammate sees the same, cases included
+    cases = {c.slot_id: c for c in PlanStore(team.b).cases(P, L, team.pid) if c.slot_id}
+    for sid, st in remote.items():
+        if st == "stale" and sid in cases:
+            assert cases[sid].stale
+        if st == "obsolete" and sid in cases:
+            assert cases[sid].status == "obsolete"
+
+
+def test_late_case_for_a_slot_removed_mid_run_is_obsolete_not_extra(team):
+    ca, cb = _shared(team)
+    sid = shared.reserve(team.cfg, L, team.pid, team.b, cb, counts={"P0": 1})[0]
+    view = ca.plan(P, L, team.pid)   # A re-shares without that slot (its decision point disappeared)
+    ca.share_plan(P, L, team.pid, view["changeset"], view["impact"], [s for s in view["slots"] if s["id"] != sid])
+    [cid] = shared.new_case_ids(team.cfg, L, team.pid, cb, 1)
+    res = shared.publish_cases(team.cfg, L, team.pid, [_case(cid, sid)], team.b, cb)
+    assert res.extras == [] and res.accepted == [cid]
+    shared.sync(team.cfg, L, team.pid, team.b, cb)
+    c = next(c for c in PlanStore(team.b).cases(P, L, team.pid) if c.id == cid)
+    assert c.status == "obsolete" and not c.suggested
+
+
+def test_failed_trace_gives_its_lock_back(team, monkeypatch):
+    from kb.testplan import graph_design
+
+    ca, cb = _shared(team)
+
+    def boom(w):
+        raise RuntimeError("Claude rate limit")
+    monkeypatch.setattr(graph_design, "baseline_flow", boom)
+    res = _gen(team, team.b, cb, {"P0": 1})
+    assert res.failed == 1
+    assert ca.plan(P, L, team.pid)["trace_locks"] == []
+    flow = PlanStore(team.a).load_impact(P, L, team.pid).flows[0].id
+    assert ca.lock_trace(P, L, team.pid, flow, "base")["holder"] == "maint@x"
+
+
+def test_registry_lost_at_trace_time_warns_offline(team, monkeypatch):
+    ca, cb = _shared(team)
+
+    def down(*a, **k):
+        raise RegistryUnavailable("registry unreachable")
+    for m in ("lock_trace", "unlock_trace", "publish_plan_items", "case_ids"):  # online until the trace step
+        monkeypatch.setattr(cb, m, down)
+    res = _gen(team, team.b, cb, {"P0": 1})
+    assert "Offline: these cases are not reserved and may duplicate a teammate's" in res.warnings
+
+
+def test_qa_can_take_back_their_own_reservations(team):
+    ca, cb = _shared(team)
+    mine = shared.reserve(team.cfg, L, team.pid, team.b, cb, counts={"P0": 2})   # then the app dies
+    res = _gen(team, team.b, cb, {"P0": 2})
+    assert res.written == 2
+    written = {s["id"] for s in ca.plan(P, L, team.pid)["slots"] if s["status"] == "written"}
+    assert set(mine) <= written

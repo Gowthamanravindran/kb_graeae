@@ -157,3 +157,11 @@ test("run_result_mentions_teammate_conflicts", async () => {
   renderApp(<PlanBoard />, api, { project: "sop", branch: "main", view: "testplans", askSeed: null, planId: "cs1", planScreen: "board", planJobId: "jR" });
   expect(await screen.findByText("1 case became a suggested extra because a teammate wrote it first.")).toBeInTheDocument();
 });
+
+test("own_reservation_left_by_a_crash_can_be_released", async () => {
+  const mine: TestPlanDetail = { ...SHARED, slots: [...B.slots, { ...DETAIL.slots[0], id: "my0", status: "reserved", reserved_by: "maint@x", reserved_until: "2026-10-31T09:30:00Z" }] };
+  const api = team({ testplan: vi.fn(async () => mine), releaseTestplan: vi.fn(async () => ({ released: ["my0"] })) }, "contributor");
+  expect(await screen.findByText(/Reserved by you until/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Release" }));
+  expect(api.releaseTestplan).toHaveBeenCalledWith("sop", "cs1", { slot_ids: ["my0"] });
+});

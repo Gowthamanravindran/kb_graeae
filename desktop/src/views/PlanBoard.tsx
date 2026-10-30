@@ -217,9 +217,10 @@ export function PlanBoard() {
                           <span className="font-mono text-xs">—</span><Prio p={s.priority} />
                           <span className="min-w-0">{s.status === "failed" ? <>Couldn't write this case. <span className="text-warn">{s.fail_reason}</span></>
                             : s.status === "reserved" && s.reserved_by && s.reserved_by !== people?.me ? `Reserved by ${s.reserved_by} until ${hhmm(s.reserved_until)}`
-                              : `Generating (${s.rule})…`}</span>
+                              : s.status === "reserved" && s.reserved_by === people?.me && !planJobId ? `Reserved by you until ${hhmm(s.reserved_until)}`
+                                : `Generating (${s.rule})…`}</span>
                           {s.status === "failed" && <Button size="sm" variant="secondary" onClick={() => void job(() => api.retrySlot(project!, planId!, s.id))}>Retry</Button>}
-                          {s.status === "reserved" && lead && <Button size="sm" variant="ghost" onClick={() => void act(async () => { await api.releaseTestplan(project!, planId!, { slot_ids: [s.id] }); await load(); })}>Release</Button>}
+                          {s.status === "reserved" && (lead || (s.reserved_by === people?.me && !planJobId)) && <Button size="sm" variant="ghost" onClick={() => void act(async () => { await api.releaseTestplan(project!, planId!, { slot_ids: [s.id] }); await load(); })}>Release</Button>}
                         </div>
                       );
                     })}

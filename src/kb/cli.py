@@ -415,7 +415,8 @@ def testplan_pr(
     store = PackStore()
     req = ChangeSetRequest(project=cfg.project, base=_pairs(base, "--base"), head=_pairs(head, "--head"),
                            pr_links=_pairs(pr, "--pr"))
-    rep = run_impact(cfg, req, store, get_provider(), make_tracer(cfg), author=_author())
+    rep = run_impact(cfg, req, store, get_provider(), make_tracer(cfg), author=_author(),
+                     client=_team_client_or_none(cfg))
     label = _plan_label(store, cfg.project, rep.change_set_id)
     typer.echo(f"plan {rep.change_set_id}")
     typer.echo(f"  {len(rep.inventory)} decision points, {len(rep.flows)} flows affected")
@@ -476,6 +477,16 @@ def testplan_generate(
     typer.echo(f"wrote {res.written} cases" + (f", {res.failed} failed" if res.failed else "")
                + (f", {res.extras} suggested extras" if res.extras else "")
                + (f", {res.extras_from_conflicts} already written by a teammate (kept as extras)" if res.extras_from_conflicts else ""))
+
+
+def _team_client_or_none(cfg):
+    """The registry client when the project has one (a shared plan's re-run updates the team's copy)."""
+    from kb.errors import KbError
+
+    try:
+        return _team_client(cfg) if cfg.registry else None
+    except KbError:
+        return None
 
 
 def _team_client(cfg):

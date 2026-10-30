@@ -212,15 +212,35 @@ def _apply(cfg, label, plan_id, store, view: dict) -> None:
             s.status, s.fail_reason = "failed", mine[s.id].fail_reason  # free for the team, but say why it failed here
         slots.append(s)
     ps.save_slots(cfg.project, label, plan_id, slots)
+    # a case's status follows its slot (stale when its code changed, obsolete when its decision point is gone),
+    # so every teammate's board and CSV say the same
+    by_case = {s.case_id: s for s in slots if s.case_id}
+
+    def settled(c: TestCase) -> TestCase:
+        sl = by_case.get(c.id)
+        if c.suggested or sl is None:
+            return c
+        if sl.status == "stale":
+            return c.model_copy(update={"stale": True, "status": "stale", "slot_id": sl.id})
+        if sl.status == "obsolete":
+            return c.model_copy(update={"status": "obsolete", "slot_id": sl.id})
+        if sl.status == "written":
+            return c.model_copy(update={"stale": False, "status": "written", "slot_id": sl.id})
+        return c
     traces = ps.dir(cfg.project, label, plan_id) / "traces"
+    pulled = set()
     for it in view["items"]:
         if it["kind"] == "scenario":
             ps.save_scenario(cfg.project, label, plan_id, Scenario.model_validate(it["payload"]))
         elif it["kind"] == "testcase":
-            ps.save_case(cfg.project, label, plan_id, TestCase.model_validate(it["payload"]))
+            pulled.add(it["id"])
+            ps.save_case(cfg.project, label, plan_id, settled(TestCase.model_validate(it["payload"])))
         elif it["kind"] == "flowtrace":
             traces.mkdir(parents=True, exist_ok=True)
             (traces / f"{it['id']}.json").write_text(json.dumps(it["payload"]))
+    for c in local.values():  # local cases the registry hasn't got yet (queued) follow their slots too
+        if c.id not in pulled and c.id in by_case:
+            ps.save_case(cfg.project, label, plan_id, settled(c))
 
 
 def reserve(cfg, label: str, plan_id: str, store, client, *, slot_ids=None, counts=None, per_flow_cap=None,

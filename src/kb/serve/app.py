@@ -575,8 +575,14 @@ def create_app(settings: ServeSettings) -> FastAPI:
         req = ChangeSetRequest(project=cfg.project, base=body.base, head=body.head, pr_links=body.pr_links, title=body.title)
 
         def run(rep):
+            team = None
+            if cfg.registry:  # a shared plan's re-run must update the team's copy, or the next sync reverts it
+                try:
+                    team = settings.client(cfg)
+                except KbError:
+                    team = None
             r = run_impact(cfg, req, settings.store(), settings.provider(), make_tracer(cfg),
-                           progress=lambda text, frac: rep.step(text, frac), author=_author())
+                           progress=lambda text, frac: rep.step(text, frac), author=_author(), client=team)
             return {"plan_id": r.change_set_id, "flows": len(r.flows), "inventory": len(r.inventory)}
         return {"job_id": submit_or_409(jobs, "testplan", run, key=f"testplan-impact:{cfg.project}").id}
 

@@ -132,21 +132,29 @@ def _cached_trace(ctx: _Ctx, flow_id: str, side: str, make) -> Flow:
             name = next((w.flow.name for w in ctx.works.values() if w.flow.id == flow_id), flow_id)
             raise KbError(f"{e.holder} is tracing {name}; try again in a few minutes") from e
         except RegistryUnavailable:
-            ctx.offline = online = False
-    f = make()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(f.model_dump_json())
-    if ctx.shared:
-        from kb.testplan import shared
+            online, ctx.offline = False, True  # carry on offline: cases are queued as unreserved
+    try:
+        f = make()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f.model_dump_json())
+        if ctx.shared:
+            from kb.testplan import shared
 
-        shared.publish_traces_and_scenarios(ctx.cfg, ctx.label, ctx.pid, ctx.store, ctx.client, {p.stem: f}, [])
+            shared.publish_traces_and_scenarios(ctx.cfg, ctx.label, ctx.pid, ctx.store, ctx.client, {p.stem: f}, [])
+        return f
+    finally:  # traced or failed, the lock goes back so a teammate isn't told to wait for a trace that won't come
         if online:
-            try:
-                ctx.client.unlock_trace(ctx.cfg.project, ctx.label, ctx.pid, flow_id, side)
-            except RegistryUnavailable:
-                pass
-            ctx.traces_held.discard((flow_id, side))
-    return f
+            _unlock(ctx, flow_id, side)
+
+
+def _unlock(ctx: _Ctx, flow_id: str, side: str) -> None:
+    from kb.errors import RegistryUnavailable
+
+    try:
+        ctx.client.unlock_trace(ctx.cfg.project, ctx.label, ctx.pid, flow_id, side)
+    except (RegistryUnavailable, KbError):
+        pass
+    ctx.traces_held.discard((flow_id, side))
 
 
 def plan_work(state: DesignState, ctx: _Ctx, counts: dict, cap: int | None, only: set[str] | None = None,
@@ -296,6 +304,23 @@ def _case_ids(ctx: _Ctx, n: int) -> list[str]:
     return [ctx.ps.next_case_id(ctx.cfg.project, ctx.label, ctx.pid) for _ in range(n)]
 
 
+def _reclaim(ctx: _Ctx) -> None:
+    """Cases still reserved by me when a run starts were left by a run that died (one design job per plan runs at
+    a time here): give them back, so this run can take them again instead of waiting 24 hours."""
+    from kb.errors import RegistryUnavailable
+
+    try:
+        me = ctx.client.me().get("email")
+    except (RegistryUnavailable, KbError):
+        return
+    mine = [s.id for s in ctx.ps.load_slots(ctx.cfg.project, ctx.label, ctx.pid) if s.status == "reserved" and s.reserved_by == me]
+    if mine:
+        _give_back(ctx, mine)
+        from kb.testplan import shared
+
+        shared.sync(ctx.cfg, ctx.label, ctx.pid, ctx.store, ctx.client)
+
+
 def _give_back(ctx: _Ctx, slot_ids) -> None:
     from kb.errors import RegistryUnavailable
 
@@ -394,6 +419,8 @@ def run_design(cfg, plan_id: str, label: str, store, provider, tracer, mode: Mod
 
         ctx.report("Syncing with the team", 0.02)
         ctx.offline = shared.sync(cfg, label, plan_id, store, client).offline
+        if not ctx.offline:
+            _reclaim(ctx)
     g = StateGraph(DesignState)
     g.add_node("plan_work", lambda s: plan_work(s, ctx, counts, per_flow_cap, only, flow_ids))
     g.add_node("flow", lambda s: flow_node(s, ctx))
@@ -430,6 +457,8 @@ def run_design(cfg, plan_id: str, label: str, store, provider, tracer, mode: Mod
     finally:
         if renewer is not None:
             renewer.stop()
+        for flow_id, side in list(ctx.traces_held):
+            _unlock(ctx, flow_id, side)
     if ctx.shared:
         res.extras_from_conflicts = ctx.conflicts
         written = {s.id for s in ctx.ps.load_slots(cfg.project, label, plan_id) if s.status == "written"}

@@ -146,19 +146,33 @@ def share(p: str, b: str, plan_id: str, body: ShareIn, user: User = Depends(curr
     with _plan_lock(s, proj.id, b, plan_id):
         plan.changeset, plan.impact, plan.updated_at = body.changeset, body.impact, _now()
         have = {r.slot_id: r for r in _slots(s, proj.id, b, plan_id)}
+        published = {i.item_id for i in s.query(PlanItemRow).filter_by(project_id=proj.id, branch=b, plan_id=plan_id,
+                                                                       kind="testcase")}
+        moved: set[str] = set()
         for sl in incoming:
             data = sl.model_dump(mode="json", include=set(SLOT_FIELDS))
             row = have.pop(sl.id, None)
+            # the client's reconcile moves a written case onto the slot of its edited decision point; only a case
+            # the team already has counts (the sharer's unpublished local ids don't)
+            carried = sl.case_id if sl.case_id in published and sl.status in ("written", "stale") else None
             if row is None:
-                # a new slot starts free: a case counts for the team only once it is published as an item,
-                # which marks the slot written (the sharer's local case ids are renumbered first)
-                s.add(PlanSlotRow(project_id=proj.id, branch=b, plan_id=plan_id, slot_id=sl.id, data=data,
-                                  status="planned", case_id=None))
-                continue
+                row = PlanSlotRow(project_id=proj.id, branch=b, plan_id=plan_id, slot_id=sl.id, data=data,
+                                  status="planned", case_id=None)
+                s.add(row)
             row.data = data
-            if sl.status == "stale" and row.status in ("written", "stale"):
+            if carried and row.case_id in (None, carried):
+                if row.case_id is None:
+                    moved.add(carried)
+                row.case_id, row.reserved_by, row.reserved_until = carried, None, None
+                row.status = "stale" if sl.status == "stale" else ("stale" if row.status == "stale" else "written")
+            elif sl.status == "stale" and row.status in ("written", "stale"):
                 row.status = "stale"  # the client saw this case's code change
+            elif sl.status == "obsolete" and row.status != "obsolete":
+                row.status, row.reserved_by, row.reserved_until = "obsolete", None, None  # its decision point is gone
         for row in have.values():  # slots whose decision point is gone
+            if row.case_id in moved and row.status != "reserved":
+                s.delete(row)  # its case now lives on the edited decision point's slot
+                continue
             if row.case_id or row.status in ("reserved", "written", "stale", "obsolete"):
                 row.status = "obsolete"
                 row.reserved_by = row.reserved_until = None
@@ -444,6 +458,13 @@ def publish_items(p: str, b: str, plan_id: str, body: PlanItemsIn, user: User = 
                 sl = slots[data["slot_id"]]
                 until = _aware(sl.reserved_until)
                 held = sl.status == "reserved" and until is not None and until > now and sl.reserved_by != user.id
+                if sl.status == "obsolete" and sl.case_id is None:
+                    # a slot removed by a new PR commit while this case was being written: keep it, obsolete (§5)
+                    sl.case_id = it.id
+                    s.add(PlanItemRow(project_id=proj.id, branch=b, plan_id=plan_id, item_id=it.id, kind=it.kind,
+                                      payload=data, author_id=user.id, published_at=now))
+                    accepted.append(it.id)
+                    continue
                 if sl.case_id or sl.status in ("written", "stale", "obsolete"):
                     conflicts.append({"id": it.id, "reason": "already written"})
                     continue
