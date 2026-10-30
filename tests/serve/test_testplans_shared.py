@@ -111,3 +111,12 @@ def test_share_needs_a_registry(tmp_path):
     pid = s.plan(a)
     r = a.post(f"/api/projects/mini/testplans/{pid}/share")
     assert r.status_code == 400 and "registry" in r.json()["detail"]
+
+
+def test_people_treats_a_registry_admin_as_lead_and_works_before_sharing(s):
+    a = s.engine(s.tmp / "home", "admin@x")
+    pid = s.plan(a)
+    p = a.get(f"/api/projects/mini/testplans/{pid}/people").json()   # not shared yet: role only, no progress
+    assert (p["me"], p["role"], p["progress"]) == ("admin@x", "maintainer", [])
+    v = s.engine(s.tmp / "home", "view@x")
+    assert v.get(f"/api/projects/mini/testplans/{pid}/people").json()["role"] == "viewer"

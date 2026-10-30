@@ -94,9 +94,29 @@ def _as_extra(ps, cfg, label, plan_id, case: TestCase, client) -> TestCase:
     [nid] = new_case_ids(cfg, label, plan_id, client, 1)
     extra = case.model_copy(update={"id": nid, "suggested": True, "status": "suggested", "slot_id": None,
                                     "unreserved": False})
-    ps.delete_case(cfg.project, label, plan_id, case.id)
-    ps.save_case(cfg.project, label, plan_id, extra)
+    _rename(ps, cfg.project, label, plan_id, case.id, extra)
     return extra
+
+
+def _rename(ps, project, label, plan_id, old_id: str, case: TestCase) -> None:
+    """Save under the new id before dropping the old file: a crash in between leaves a duplicate, never a loss."""
+    ps.save_case(project, label, plan_id, case)
+    if case.id != old_id:
+        ps.delete_case(project, label, plan_id, old_id)
+
+
+def _send_extras(cfg, label, plan_id, store, client, extras: list[TestCase]) -> bool:
+    """Publish suggested extras; if the registry drops, queue the extras themselves (the cases they came from are
+    settled already, so they must not be queued again). Returns True when sent."""
+    if not extras:
+        return True
+    items = [_item("testcase", e.id, e) for e in extras]
+    try:
+        client.publish_plan_items(cfg.project, label, plan_id, items)
+        return True
+    except RegistryUnavailable:
+        _enqueue(store, cfg.project, label, plan_id, items)
+        return False
 
 
 def _publish(cfg, label, plan_id, store, client, items: list[dict]) -> tuple[list[str], list[TestCase]]:
@@ -137,9 +157,8 @@ def share(cfg, label: str, plan_id: str, store, client) -> None:
         renamed = []
         rename = {}
         for c, nid in zip(mine, ids):
-            ps.delete_case(cfg.project, label, plan_id, c.id)
             n = c.model_copy(update={"id": nid})
-            ps.save_case(cfg.project, label, plan_id, n)
+            _rename(ps, cfg.project, label, plan_id, c.id, n)
             rename[c.id] = nid
             renamed.append(n)
         ps.update_slots(cfg.project, label, plan_id,
@@ -179,18 +198,14 @@ def _flush(cfg, label, plan_id, store, client) -> SyncResult:
     for it, nid in zip(temp, new_case_ids(cfg, label, plan_id, client, len(temp))):
         if nid.startswith(TEMP):
             raise RegistryUnavailable("registry unreachable")
-        ps.delete_case(cfg.project, label, plan_id, it["id"])
+        old = it["id"]
         it["id"] = it["payload"]["id"] = nid
-        ps.save_case(cfg.project, label, plan_id, TestCase.model_validate(it["payload"]))
+        _rename(ps, cfg.project, label, plan_id, old, TestCase.model_validate(it["payload"]))
     _set_queue(store, cfg.project, label, plan_id, items)  # renumbered, in case the publish below fails
     accepted, lost = _publish(cfg, label, plan_id, store, client, items)
-    extras = []
-    for c in lost:
-        extra = _as_extra(ps, cfg, label, plan_id, c, client)
-        extras.append(_item("testcase", extra.id, extra))
-    if extras:
-        client.publish_plan_items(cfg.project, label, plan_id, extras)
-    _set_queue(store, cfg.project, label, plan_id, [])
+    _set_queue(store, cfg.project, label, plan_id, [])   # settled; from here only the extras are outstanding
+    extras = [_as_extra(ps, cfg, label, plan_id, c, client) for c in lost]
+    _send_extras(cfg, label, plan_id, store, client, extras)
     n_acc = sum(1 for i in items if i["id"] in accepted and i["kind"] == "testcase" and not i["payload"].get("suggested"))
     return SyncResult(accepted=n_acc, extras=len(extras))
 
@@ -202,16 +217,25 @@ def _apply(cfg, label, plan_id, store, view: dict) -> None:
     ps.save_impact(cfg.project, label, ImpactReport.model_validate(view["impact"]))
     local = {c.id: c for c in ps.cases(cfg.project, label, plan_id)}
     queued = {i["id"] for i in _queued(store, cfg.project, label, plan_id)}
-    mine = {s.id: s for s in ps.load_slots(cfg.project, label, plan_id)}
-    slots = []
-    for raw in view["slots"]:
-        s = CaseSlot.model_validate(raw)
-        if s.status == "planned" and any(c.slot_id == s.id and c.id in queued for c in local.values()):
-            s.status = "written"  # written here offline, not sent yet
-        elif s.status == "planned" and s.id in mine and mine[s.id].status == "failed":
-            s.status, s.fail_reason = "failed", mine[s.id].fail_reason  # free for the team, but say why it failed here
-        slots.append(s)
-    ps.save_slots(cfg.project, label, plan_id, slots)
+    on_registry = {it["id"] for it in view["items"] if it["kind"] == "testcase"}
+    slots: list[CaseSlot] = []
+
+    def merge(current: list[CaseSlot]) -> None:
+        # under the slot lock, so a run on this computer writing a slot meanwhile isn't overwritten
+        mine = {s.id: s for s in current}
+        for raw in view["slots"]:
+            s = CaseSlot.model_validate(raw)
+            m = mine.get(s.id)
+            if s.status in ("planned", "reserved") and any(c.slot_id == s.id and c.id in queued for c in local.values()):
+                s.status = "written"  # written here offline, not sent yet
+            elif (s.status in ("planned", "reserved") and m is not None and m.status == "written" and m.case_id
+                  and m.case_id not in on_registry):
+                s.status, s.case_id = "written", m.case_id  # written by a run here, about to be published
+            elif s.status == "planned" and m is not None and m.status == "failed":
+                s.status, s.fail_reason = "failed", m.fail_reason  # free for the team, but say why it failed here
+            slots.append(s)
+        current[:] = slots
+    ps.update_slots(cfg.project, label, plan_id, merge)
     # a case's status follows its slot (stale when its code changed, obsolete when its decision point is gone),
     # so every teammate's board and CSV say the same
     by_case = {s.case_id: s for s in slots if s.case_id}
@@ -265,21 +289,23 @@ def publish_cases(cfg, label: str, plan_id: str, cases: list[TestCase], store, c
     online = [c for c in cases if not c.id.startswith(TEMP)]
     offline = [c for c in cases if c.id.startswith(TEMP)]
     if online:
+        lost = []
         try:
             out.accepted, lost = _publish(cfg, label, plan_id, store, client,
                                           [_item("testcase", c.id, c) for c in online])
-            for c in lost:
-                extra = _as_extra(ps, cfg, label, plan_id, c, client)
-                client.publish_plan_items(cfg.project, label, plan_id, [_item("testcase", extra.id, extra)])
-                out.extras.append(extra.id)
         except RegistryUnavailable:
             offline = online + offline
+        extras = [_as_extra(ps, cfg, label, plan_id, c, client) for c in lost]
+        if _send_extras(cfg, label, plan_id, store, client, extras):
+            out.extras = [e.id for e in extras]
+        else:
+            out.queued = [e.id for e in extras]
     if offline:
         marked = [c.model_copy(update={"unreserved": True}) for c in offline]
         for c in marked:
             ps.save_case(cfg.project, label, plan_id, c)
         _enqueue(store, cfg.project, label, plan_id, [_item("testcase", c.id, c) for c in marked])
-        out.queued = [c.id for c in marked]
+        out.queued += [c.id for c in marked]
     return out
 
 

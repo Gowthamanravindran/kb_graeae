@@ -90,9 +90,11 @@ export function PlanBoard() {
       setD(detail);
       if (detail.shared) {
         try { setPeople(await api.testplanPeople(project, planId)); setOffline(false); } catch { setOffline(true); }
+      } else if (current?.registry) {
+        try { setPeople(await api.testplanPeople(project, planId)); } catch { /* not reachable: the registry answers a Share itself */ }
       }
     } catch (e) { setError(msg(e)); }
-  }, [api, project, planId]);
+  }, [api, project, planId, current?.registry]);
   useEffect(() => { void load(); }, [load]);
   if (error && !d) return <div role="alert" className="rounded-lg bg-warn-soft px-4 py-3 text-sm text-warn">{error}</div>;
   if (!d) return <p className="text-muted">Loading the plan…</p>;
@@ -110,6 +112,7 @@ export function PlanBoard() {
     if (r?.saved) setNote(`Saved ${r.path ?? "the CSV"}.`);
   });
   const lead = !!d.shared && people?.role === "maintainer";
+  const viewer = people?.role === "viewer";   // reads the team's plan; can't share it or write cases into it
   const typeOf = (s: CaseSlot, c?: PlanCase): ScenarioType => (c?.scenario_id && scen.get(c.scenario_id)?.type) || s.scenario_type;
   return (
     <div className="flex flex-col gap-5">
@@ -128,11 +131,11 @@ export function PlanBoard() {
               <Badge tone="ok">Shared with the team</Badge>
               <Button variant="secondary" onClick={() => void job(() => api.syncTestplan(project!, planId!))}>Sync</Button>
             </>
-          ) : current?.registry ? (
+          ) : current?.registry && !viewer ? (
             <Button variant="secondary" onClick={() => void job(() => api.shareTestplan(project!, planId!))}>Share with team</Button>
           ) : null}
           <Button variant="secondary" onClick={() => void exportCsv()}>Export CSV</Button>
-          <Button variant="secondary" onClick={() => setMore((m) => !m)}>Generate more</Button>
+          {!viewer && <Button variant="secondary" onClick={() => setMore((m) => !m)}>Generate more</Button>}
           <Button variant="ghost" onClick={() => go("testplans", { planScreen: "list" })}>All plans</Button>
         </div>
       </div>
@@ -149,7 +152,7 @@ export function PlanBoard() {
         void load();
       }} />}
       {d.shared && people && <TeamStrip people={people} />}
-      {more && !planJobId && (
+      {more && !planJobId && !viewer && (
         <GeneratePanel detail={d} flowIds={new Set(flows.map((f) => f.id))} label={d.shared ? "Reserve & generate" : "Generate"}
           warning={d.shared && (offline || (d.pending ?? 0) > 0) ? OFFLINE : null} onStart={async (counts, cap) => {
           await job(() => api.generate(project!, planId!, counts, cap));

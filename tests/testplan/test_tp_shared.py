@@ -360,3 +360,60 @@ def test_qa_can_take_back_their_own_reservations(team):
     assert res.written == 2
     written = {s["id"] for s in ca.plan(P, L, team.pid)["slots"] if s["status"] == "written"}
     assert set(mine) <= written
+
+
+# ---------------------------------------------------------------- deferred minors (client)
+
+def test_extra_survives_a_registry_drop_between_the_two_publishes(team, monkeypatch):
+    ca, cb = _shared(team)
+    sid = PlanStore(team.a).load_slots(P, L, team.pid)[0].id
+    [x, y] = shared.new_case_ids(team.cfg, L, team.pid, ca, 2)
+    shared.publish_cases(team.cfg, L, team.pid, [_case(x, sid)], team.a, ca)
+    real = cb.publish_plan_items
+    calls = []
+
+    def flaky(*a, **k):  # the first publish answers "conflict"; the registry drops before the extra is sent
+        calls.append(1)
+        if len(calls) > 1:
+            raise RegistryUnavailable("registry unreachable")
+        return real(*a, **k)
+    monkeypatch.setattr(cb, "publish_plan_items", flaky)
+    res = shared.publish_cases(team.cfg, L, team.pid, [_case(y, sid, "B's version")], team.b, cb)
+    assert res.accepted == [] and len(res.queued) == 1 and res.queued[0] != y   # the extra is queued, not the original
+    monkeypatch.undo()
+    shared.sync(team.cfg, L, team.pid, team.b, cb)
+    extras = [i for i in ca.plan(P, L, team.pid)["items"] if i["payload"].get("suggested")]
+    assert len(extras) == 1 and extras[0]["payload"]["title"] == "B's version"
+    assert shared.pending(team.b, P, L, team.pid) == 0
+
+
+def test_renaming_never_loses_a_case(team, monkeypatch):
+    run_design(team.cfg, team.pid, L, team.a, DesignFake(), RecordingTracer(), "pr", {"P0": 1}, None)
+    ps = PlanStore(team.a)
+    [c] = ps.cases(P, L, team.pid)
+    old = "TC-050"   # not what the shared counter will hand out, so share must rename it
+    ps.save_case(P, L, team.pid, c.model_copy(update={"id": old}))
+    ps.delete_case(P, L, team.pid, c.id)
+    ps.update_slots(P, L, team.pid, lambda ss: [setattr(s, "case_id", old) for s in ss if s.case_id == c.id])
+    real = PlanStore.save_case
+
+    def crash_on_renamed(self, project, label, pid, case):
+        if case.id != old:
+            raise RuntimeError("power cut")
+        return real(self, project, label, pid, case)
+    monkeypatch.setattr(PlanStore, "save_case", crash_on_renamed)
+    with pytest.raises(RuntimeError):
+        shared.share(team.cfg, L, team.pid, team.a, team.client("maint@x"))
+    monkeypatch.undo()
+    assert [c.id for c in PlanStore(team.a).cases(P, L, team.pid)] == [old]   # still there
+
+
+def test_sync_keeps_a_case_this_run_just_wrote(team):
+    ca, cb = _shared(team)
+    [sid] = shared.reserve(team.cfg, L, team.pid, team.b, cb, counts={"P0": 1})
+    pb = PlanStore(team.b)
+    pb.save_case(P, L, team.pid, _case("TC-900", sid))    # written by a run on this computer, not published yet
+    pb.update_slots(P, L, team.pid, lambda ss: [setattr(s, "status", "written") or setattr(s, "case_id", "TC-900")
+                                                 for s in ss if s.id == sid])
+    shared.sync(team.cfg, L, team.pid, team.b, cb)          # e.g. a lead's Assign meanwhile
+    assert next(s for s in pb.load_slots(P, L, team.pid) if s.id == sid).status == "written"

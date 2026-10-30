@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PlanCase, TestPlanDetail } from "../api/types";
 import { useApp } from "../state";
@@ -164,4 +164,21 @@ test("own_reservation_left_by_a_crash_can_be_released", async () => {
   expect(await screen.findByText(/Reserved by you until/)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Release" }));
   expect(api.releaseTestplan).toHaveBeenCalledWith("sop", "cs1", { slot_ids: ["my0"] });
+});
+
+test("viewer_sees_no_share_or_generate", async () => {
+  start({ testplanPeople: vi.fn(async () => PEOPLE("viewer")) });
+  expect(await screen.findByRole("button", { name: "Export CSV" })).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Share with team" })).not.toBeInTheDocument());
+  expect(screen.queryByRole("button", { name: "Generate more" })).not.toBeInTheDocument();
+});
+
+test("shared_viewer_cannot_reserve_and_contributor_cannot_assign", async () => {
+  team({}, "viewer");
+  expect(await screen.findByText("Shared with the team")).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Generate more" })).not.toBeInTheDocument());
+  cleanup();
+  team({}, "contributor");
+  expect(await screen.findByRole("button", { name: "Generate more" })).toBeInTheDocument();
+  expect(screen.queryByLabelText(/^Assign /)).not.toBeInTheDocument();
 });

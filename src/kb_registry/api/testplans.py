@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ValidationError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from kb_registry.api.packs import _latest_base
@@ -19,6 +20,8 @@ from kb_registry.paths import is_safe_id
 
 router = APIRouter()
 PREFIX = "/projects/{p}/branches/{b:path}/testplans"
+MAX_SLOTS = 5000   # slots in one shared plan, and ids in one reserve/renew/release/assign request
+MAX_IMPACT_FLOWS = 2000
 SLOT_FIELDS = ("flow_id", "scenario_type", "inventory_ids", "outcome", "priority", "rule")
 
 
@@ -77,6 +80,11 @@ def _check_id(plan_id: str) -> None:
         raise HTTPException(400, f"plan id {plan_id!r} is not allowed")
 
 
+def _cap(ids: list | None, what: str = "slot ids") -> None:
+    if ids is not None and len(ids) > MAX_SLOTS:
+        raise HTTPException(413, f"at most {MAX_SLOTS} {what} per request")
+
+
 def _emails(s: Session) -> dict[int, str]:
     return {u.id: u.email for u in s.query(User)}
 
@@ -129,6 +137,9 @@ def share(p: str, b: str, plan_id: str, body: ShareIn, user: User = Depends(curr
     _check_id(plan_id)
     if _latest_base(s, proj.id, b) is None:
         raise HTTPException(404, f"no analysed base for {p}@{b} — push the analysis first")
+    _cap(body.slots, "slots")
+    if len(body.impact.get("flows", []) or []) > MAX_IMPACT_FLOWS:
+        raise HTTPException(413, f"at most {MAX_IMPACT_FLOWS} flows in a shared plan")
     try:
         cs = ChangeSet.model_validate(body.changeset)
         ImpactReport.model_validate(body.impact)
@@ -137,12 +148,18 @@ def share(p: str, b: str, plan_id: str, body: ShareIn, user: User = Depends(curr
         raise HTTPException(400, f"invalid test plan: {e.errors()[0]['msg']}") from e
     if cs.id != plan_id:
         raise HTTPException(400, f"changeset id is {cs.id}, not {plan_id}")
+    bad = next((sl.id for sl in incoming if not is_safe_id(sl.id)), None)
+    if bad is not None:
+        raise HTTPException(400, f"slot id {bad[:40]!r} is not allowed (≤200 of letters, digits, . _ : -)")
     plan = s.get(TestPlanRow, (proj.id, b, plan_id))
     if plan is None:
-        plan = TestPlanRow(project_id=proj.id, branch=b, plan_id=plan_id, changeset=body.changeset,
-                           impact=body.impact, created_by=user.id, updated_at=_now(), next_case=0)
-        s.add(plan)
-        s.flush()
+        try:   # two first shares at once: one creates the row, the other reuses it
+            s.add(TestPlanRow(project_id=proj.id, branch=b, plan_id=plan_id, changeset=body.changeset,
+                              impact=body.impact, created_by=user.id, updated_at=_now(), next_case=0))
+            s.commit()
+        except IntegrityError:
+            s.rollback()
+        plan = s.get(TestPlanRow, (proj.id, b, plan_id), populate_existing=True)
     with _plan_lock(s, proj.id, b, plan_id):
         plan.changeset, plan.impact, plan.updated_at = body.changeset, body.impact, _now()
         have = {r.slot_id: r for r in _slots(s, proj.id, b, plan_id)}
@@ -236,6 +253,8 @@ def reserve(p: str, b: str, plan_id: str, body: ReserveIn, user: User = Depends(
             s: Session = Depends(get_session)) -> dict:
     """Reserve slots for the caller, atomically: concurrent requests never get the same slot. By ids, or by
     counts per priority in the plan's order (priority, then flow risk, then slot id)."""
+    _cap(body.slot_ids)
+    _cap(body.flow_ids, "flow ids")
     proj = require_role(s, user, p, "contributor")
     plan = _plan(s, proj.id, b, plan_id)
     risk = {f["id"]: f.get("risk", 0.0) for f in plan.impact.get("flows", [])}
@@ -272,6 +291,7 @@ def reserve(p: str, b: str, plan_id: str, body: ReserveIn, user: User = Depends(
 @router.post(PREFIX + "/{plan_id}/reservations/renew")
 def renew(p: str, b: str, plan_id: str, body: SlotIdsIn, user: User = Depends(current_user),
           s: Session = Depends(get_session)) -> dict:
+    _cap(body.slot_ids)
     proj = require_role(s, user, p, "contributor")
     _plan(s, proj.id, b, plan_id)
     with _plan_lock(s, proj.id, b, plan_id):
@@ -292,6 +312,7 @@ def release(p: str, b: str, plan_id: str, body: SlotIdsIn, user: User = Depends(
     """Give slots back. A contributor releases their own; a maintainer (the QA lead) anyone's."""
     from kb_registry.auth import role_of
 
+    _cap(body.slot_ids)
     proj = require_role(s, user, p, "contributor")
     _plan(s, proj.id, b, plan_id)
     lead = user.is_admin or role_of(s, user, proj) == "maintainer"
@@ -319,13 +340,18 @@ def assign(p: str, b: str, plan_id: str, body: AssignIn, user: User = Depends(cu
     by anyone else is released, so the assignee can take the slot."""
     from kb_registry.auth import role_of
 
+    _cap(body.slot_ids)
+    _cap(body.flow_ids, "flow ids")
     proj = require_role(s, user, p, "maintainer")
     _plan(s, proj.id, b, plan_id)
     target = None
     if body.email is not None:
         target = s.query(User).filter_by(email=body.email).one_or_none()
-        if target is None or role_of(s, target, proj) is None:
+        role = role_of(s, target, proj) if target is not None else None
+        if role is None and not (target is not None and target.is_admin):
             raise HTTPException(400, f"{body.email} is not a member of {p}")
+        if role == "viewer" and not target.is_admin:
+            raise HTTPException(400, f"{body.email} is a viewer and can't write test cases")
     with _plan_lock(s, proj.id, b, plan_id):
         ids, flows = set(body.slot_ids or []), set(body.flow_ids or [])
         done = []
@@ -333,7 +359,8 @@ def assign(p: str, b: str, plan_id: str, body: AssignIn, user: User = Depends(cu
             if r.slot_id not in ids and r.data.get("flow_id") not in flows:
                 continue
             r.assigned_to = target.id if target else None
-            if r.status == "reserved" and r.reserved_by not in (None, r.assigned_to):
+            # assigning someone new frees the slot for them; unassigning leaves the holder's work alone
+            if target is not None and r.status == "reserved" and r.reserved_by not in (None, target.id):
                 r.status, r.reserved_by, r.reserved_until = "planned", None, None
             done.append(r.slot_id)
         s.commit()

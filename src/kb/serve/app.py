@@ -708,9 +708,13 @@ def create_app(settings: ServeSettings) -> FastAPI:
         cfg = ws.config(name)
         ps, label = _plan(cfg, plan_id)
         client = _team(cfg)
-        me = client.me().get("email")
+        who = client.me()
+        me = who.get("email")
         members = client.members(cfg.project)
-        view = client.plan(cfg.project, label, plan_id)
+        shared_plan = ps.load_change_set(cfg.project, label, plan_id).shared
+        view = client.plan(cfg.project, label, plan_id) if shared_plan else {"items": [], "slots": []}
+        # registry admins pass every role check, so they get the lead's controls
+        role = "maintainer" if who.get("is_admin") else next((m["role"] for m in members if m["email"] == me), None)
         authors = {i["id"]: i["author"] for i in view["items"] if i["kind"] == "testcase"}
         written: dict[str, int] = {}
         reserved: dict[str, int] = {}
@@ -719,8 +723,8 @@ def create_app(settings: ServeSettings) -> FastAPI:
                 written[authors[sl["case_id"]]] = written.get(authors[sl["case_id"]], 0) + 1
             if sl.get("reserved_by"):
                 reserved[sl["reserved_by"]] = reserved.get(sl["reserved_by"], 0) + 1
-        people = sorted(set(written) | set(reserved) | ({me} if me else set()))
-        return {"me": me, "role": next((m["role"] for m in members if m["email"] == me), None), "members": members,
+        people = sorted(set(written) | set(reserved) | ({me} if me and shared_plan else set()))
+        return {"me": me, "role": role, "members": members,
                 "progress": [{"email": e, "written": written.get(e, 0), "reserved": reserved.get(e, 0)} for e in people],
                 "trace_locks": view.get("trace_locks", [])}
 

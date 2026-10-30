@@ -308,3 +308,44 @@ def test_case_ids_are_unique_across_the_team(reg):
     b = reg.client("maint@x").post(f"{URL}/pr-1/case-ids", json={"count": 3}).json()["ids"]
     assert a == ["TC-001", "TC-002"] and b == ["TC-003", "TC-004", "TC-005"]
     assert reg.client("view@x").post(f"{URL}/pr-1/case-ids", json={"count": 1}).status_code == 403
+
+
+# ---------------------------------------------------------------- deferred minors
+
+def test_two_simultaneous_first_shares_both_succeed(reg_any_db):
+    import threading
+
+    reg = reg_any_db
+    codes = []
+    ts = [threading.Thread(target=lambda e=e: codes.append(share(reg, [slot("a")], email=e).status_code))
+          for e in ("contrib@x", "maint@x", "contrib@x", "maint@x")]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert codes == [200, 200, 200, 200]
+
+
+def test_unassigning_keeps_the_holders_reservation(reg):
+    share(reg, [slot("a")])
+    m = reg.client("maint@x")
+    m.post(f"{URL}/pr-1/assign", json={"slot_ids": ["a"], "email": "contrib@x"})
+    reserve(reg, slot_ids=["a"])
+    m.post(f"{URL}/pr-1/assign", json={"slot_ids": ["a"], "email": None})
+    s = slots(reg)["a"]
+    assert (s["status"], s["reserved_by"], s["assigned_to"]) == ("reserved", "contrib@x", None)
+
+
+def test_size_limits(reg):
+    assert share(reg, [slot(f"s{i}") for i in range(5001)]).status_code == 413
+    assert share(reg, [slot("x" * 201)]).status_code == 400
+    share(reg, [slot("a")])
+    assert reserve(reg, slot_ids=[f"s{i}" for i in range(5001)]).status_code == 413
+    big = reg.client("contrib@x").post(f"{URL}/pr-1/reservations/renew", json={"slot_ids": ["a"] * 5001})
+    assert big.status_code == 413
+
+
+def test_viewer_cannot_be_assigned(reg):
+    share(reg, [slot("a")])
+    r = reg.client("maint@x").post(f"{URL}/pr-1/assign", json={"slot_ids": ["a"], "email": "view@x"})
+    assert r.status_code == 400 and "viewer" in r.json()["detail"]
