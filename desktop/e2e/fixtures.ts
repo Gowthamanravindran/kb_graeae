@@ -37,7 +37,7 @@ export async function launch(env: Record<string, string>): Promise<{ app: Electr
 }
 
 /** A real kb-registry (SQLite + file store) on a free port, with project `mini` and a maintainer token. */
-export async function startRegistry(dir: string): Promise<{ url: string; token: string; stop(): void }> {
+export async function startRegistry(dir: string): Promise<{ url: string; token: string; contribToken: string; stop(): void }> {
   const { spawn } = await import("node:child_process");
   const net = await import("node:net");
   const port = await new Promise<number>((resolve) => {
@@ -52,6 +52,8 @@ export async function startRegistry(dir: string): Promise<{ url: string; token: 
   reg("admin", "create-project", "mini");
   const token = reg("admin", "create-user", "maint@x").trim().split("\n").pop()!.trim();
   reg("admin", "grant", "maint@x", "mini", "maintainer");
+  const contribToken = reg("admin", "create-user", "contrib@x").trim().split("\n").pop()!.trim();
+  reg("admin", "grant", "contrib@x", "mini", "contributor");
   const proc = spawn("uv", ["run", "--project", repo, "kb-registry", "serve", "--port", String(port)], { cwd: dir, env, stdio: "ignore" });
   const url = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 120; i++) {
@@ -62,5 +64,15 @@ export async function startRegistry(dir: string): Promise<{ url: string; token: 
     }
     await new Promise((r) => setTimeout(r, 250));
   }
-  return { url, token, stop: () => proc.kill() };
+  return { url, token, contribToken, stop: () => proc.kill() };
+}
+
+
+/** Two QAs on one shared project (see tests/e2e_support/make_team_homes.py). */
+export function makeTeamHomes(url: string, maint: string, contrib: string): { homeA: string; homeB: string; planId: string } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kbteam-"));
+  const out = execFileSync("uv", ["run", "--project", repo, "python", path.join(repo, "tests/e2e_support/make_team_homes.py"), dir, url, maint, contrib],
+    { cwd: repo, encoding: "utf8" }).trim().split("\n");
+  const [homeA, homeB, planId] = out.slice(-3);
+  return { homeA, homeB, planId };
 }

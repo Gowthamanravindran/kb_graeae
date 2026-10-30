@@ -150,8 +150,10 @@ def share(p: str, b: str, plan_id: str, body: ShareIn, user: User = Depends(curr
             data = sl.model_dump(mode="json", include=set(SLOT_FIELDS))
             row = have.pop(sl.id, None)
             if row is None:
+                # a new slot starts free: a case counts for the team only once it is published as an item,
+                # which marks the slot written (the sharer's local case ids are renumbered first)
                 s.add(PlanSlotRow(project_id=proj.id, branch=b, plan_id=plan_id, slot_id=sl.id, data=data,
-                                  status="stale" if sl.status == "stale" else "planned", case_id=sl.case_id))
+                                  status="planned", case_id=None))
                 continue
             row.data = data
             if sl.status == "stale" and row.status in ("written", "stale"):

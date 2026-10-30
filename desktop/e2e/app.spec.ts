@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { launch, makeHome, makePrHome, startRegistry } from "./fixtures";
+import { launch, makeHome, makePrHome, makeTeamHomes, startRegistry } from "./fixtures";
 
 test("app_starts_and_shows_library", async () => {
   const { home } = makeHome();
@@ -233,4 +233,60 @@ test("delete_an_analysed_branch", async () => {
   const packs = fs.readdirSync(path.join(home, "packs")).filter((d) => d.startsWith("mini@"));
   expect(packs).toEqual([]);
   await app.close();
+});
+
+
+test("shared_test_plan_two_users", async () => {
+  test.setTimeout(360_000);
+  const regDir = fs.mkdtempSync(path.join(os.tmpdir(), "kbreg-"));
+  const registry = await startRegistry(regDir);
+  const { homeA, homeB } = makeTeamHomes(registry.url, registry.token, registry.contribToken);
+  const saveDir = fs.mkdtempSync(path.join(os.tmpdir(), "kbsave-"));
+  try {
+    // QA A (the lead): write 2 P0 cases, then share the plan with the team
+    let { app, page } = await launch({ KB_HOME: homeA });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(page.getByRole("heading", { name: "Library" })).toBeVisible({ timeout: 60_000 });
+    await page.getByRole("link", { name: "Test plans" }).click();
+    await page.getByRole("button", { name: "Choose cases" }).click();
+    for (const p of ["P0", "P1", "P2", "P3"]) await page.getByLabel(`${p} cases to generate now`).fill(p === "P0" ? "2" : "0");
+    await page.getByRole("button", { name: "Generate", exact: true }).click();
+    await expect(page.getByText("2 / 4")).toBeVisible({ timeout: 90_000 });
+    await page.getByRole("button", { name: "Share with team" }).click();
+    await expect(page.getByText("Shared with the team")).toBeVisible({ timeout: 60_000 });
+    await app.close();
+
+    // QA B: open the team's plan, reserve and write the 3 P1 cases
+    ({ app, page } = await launch({ KB_HOME: homeB, KB_E2E_SAVE_DIR: saveDir }));
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(page.getByRole("heading", { name: "Library" })).toBeVisible({ timeout: 60_000 });
+    await page.getByRole("link", { name: "Test plans" }).click();
+    const sharedList = page.getByRole("region", { name: "Shared with the team" });
+    await sharedList.getByRole("button", { name: "Open" }).click();
+    await expect(page.getByText("Shared with the team").first()).toBeVisible({ timeout: 60_000 });
+    await page.getByRole("button", { name: "Generate more" }).click();
+    for (const p of ["P0", "P1", "P2", "P3"]) await page.getByLabel(`${p} cases to generate now`).fill(p === "P1" ? "3" : "0");
+    await page.getByRole("button", { name: "Reserve & generate" }).click();
+    await expect(page.getByText("3 / 3").first()).toBeVisible({ timeout: 90_000 });
+    const strip = page.getByRole("region", { name: "Team progress" });
+    await expect(strip.getByText("You (contrib@x)")).toBeVisible({ timeout: 15_000 });
+    await expect(strip.getByText("maint@x")).toBeVisible();
+    await page.getByRole("button", { name: "Export CSV" }).click();
+    await expect(page.getByText(/^Saved /)).toBeVisible({ timeout: 15_000 });
+    const csv = fs.readFileSync(path.join(saveDir, fs.readdirSync(saveDir)[0]), "utf8");
+    expect(csv.split("TC-0").length - 1).toBe(5);
+    await app.close();
+
+    // QA A again: after a sync the board shows both people's cases
+    ({ app, page } = await launch({ KB_HOME: homeA }));
+    await expect(page.getByRole("heading", { name: "Library" })).toBeVisible({ timeout: 60_000 });
+    await page.getByRole("link", { name: "Test plans" }).click();
+    await page.getByRole("button", { name: "Open board" }).click();
+    await page.getByRole("button", { name: "Sync" }).click();
+    await expect(page.getByText("3 / 3").first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText("2 / 4")).toBeVisible();
+    await app.close();
+  } finally {
+    registry.stop();
+  }
 });

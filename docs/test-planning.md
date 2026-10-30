@@ -118,4 +118,40 @@ deleted when the next PR plan starts and rebuilt if needed. A change to `ignore`
 5. Generate 5 P0 cases with real Claude Code and review them as a QA lead would. Export CSV and open it in Excel.
 6. Push a new commit to the PR and run **Find what changed** again. Cases whose code changed show as stale.
 
-Sharing a plan between several QAs is stage 5b: shared plans, reserved slots and lead assignment.
+## Working as a team
+
+A test plan can be shared through the project's registry, so several QAs split the work without repeating the
+analysis, a trace or a case. Each QA pays only for the cases they generate, with their own Claude.
+
+1. **Share.** Push the base analysis (for example `production`) to the registry. Then, on the plan board, choose
+   **Share with team** (or `kb testplan share kb.yaml <plan-id>`). Cases already written are kept and renumbered
+   from the plan's shared counter, so ids never collide.
+2. **Open a teammate's plan.** Pull the same analysis. **Test plans** then lists it under **Shared with the
+   team**; **Open** downloads it (or `kb testplan pull kb.yaml <plan-id> --label production`).
+3. **Reserve & generate.** On a shared plan the generate button reads **Reserve & generate**:
+   - The registry hands each case to one person only. Two QAs asking at the same moment get different cases.
+   - Reservations last 24 hours and are renewed every 10 minutes while a run lasts.
+   - Unused reservations are given back when the run ends.
+   - Traces and scenarios one person makes are reused by everyone. A flow is traced by one person at a time; the
+     others see "<name> is tracing <flow>" and can retry a few minutes later.
+4. **Team progress.** The board shows, per person, how many cases they wrote and how many they hold, plus
+   "Reserved by … until …" on cases in progress. **Sync** (or `kb testplan sync`) brings in teammates' work.
+5. **QA lead.** A project maintainer can:
+   - **Assign** a flow to a teammate (only they can reserve its cases);
+   - **Release** anyone's reservation;
+   - do both from the CLI with `kb testplan assign … --flow F --to email` and `kb testplan release … --slot S`.
+
+   Contributors reserve unassigned cases and cases assigned to them. Viewers read and export.
+
+**When two people write the same case** (a reservation expired, or someone worked offline), the first published
+case wins. The other is kept as a **suggested extra**, so nothing paid for is lost. The board says how many cases
+this happened to after a run.
+
+**Offline.** If the registry can't be reached, you can still generate. The board warns first: *"Offline: these
+cases are not reserved and may duplicate a teammate's."* The cases are queued. On the next sync each is accepted if
+its case is still unwritten, and otherwise becomes a suggested extra.
+
+**New commits on the PR.** Running **Find what changed** again updates the team's copy too. Everyone's
+reservations and cases are kept: changed code marks cases stale, and removed decision points mark them obsolete.
+
+Without a registry, everything works for one person as before.

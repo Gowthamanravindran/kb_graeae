@@ -241,3 +241,13 @@ def test_cli_share_pull_sync_assign_release(team, monkeypatch, tmp_path):
     team.client("contrib@x").reserve(P, L, team.pid, slot_ids=[sid])
     r = run("release", str(y), team.pid, "--slot", sid)
     assert r.exit_code == 0 and sid in r.stdout, r.output
+
+
+def test_cases_written_before_sharing_count_as_written_for_the_team(team):
+    ca = team.client("maint@x")
+    run_design(team.cfg, team.pid, L, team.a, DesignFake(), RecordingTracer(), "pr", {"P0": 2}, None)  # local, not shared yet
+    shared.share(team.cfg, L, team.pid, team.a, ca)
+    view = ca.plan(P, L, team.pid)
+    written = [s for s in view["slots"] if s["status"] == "written"]
+    assert len(written) == 2 and all(s["case_id"].startswith("TC-") for s in written)
+    assert not [i for i in view["items"] if i["kind"] == "testcase" and i["payload"].get("suggested")]
