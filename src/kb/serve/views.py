@@ -107,13 +107,21 @@ def map_view(cfg, pack) -> dict:
 
 MAX_ITEMS = 40
 _KIND_UNRESOLVED = {"handled_by": "graphql", "sends_graphql": "graphql", "enqueues": "queue", "consumed_by": "queue",
-                    "routes_to": "route"}
+                    "routes_to": "route", "calls_http": "http", "served_by": "http", "publishes": "message"}
+
+
+def _unresolved_kind(e) -> str:
+    if e.dst.startswith("unresolved:"):   # `unresolved:<what>:…` says which kind of link it was
+        what = e.dst.split(":", 2)[1]
+        if what in ("http", "message", "queue", "graphql", "route"):
+            return what
+    return _KIND_UNRESOLVED.get(e.kind, e.kind)
 
 
 def connections_view(cfg, pack) -> dict:
-    """How the repos are wired together, at the level of each repo's part of a module: GraphQL calls from
-    one repo to another, queue producers → topic → consumers, and the routes that open each screen. Built
-    from the linker edges only (no LLM)."""
+    """How the repos are wired together, at the level of each repo's part of a module: GraphQL and REST calls
+    from one repo to another, queue producers → topic → consumers, messages through Kafka / SQS / RabbitMQ, and
+    the routes that open each screen. Built from the linker edges only (no LLM)."""
     g = pack.graph
     roles = {r.name: r.role for r in cfg.repos}
     names = {m.id: m.name for m in pack.modules}
@@ -177,7 +185,7 @@ def connections_view(cfg, pack) -> dict:
     linker = [e for e in g.edges() if e.origin == "linker"]
     for e in linker:
         if not e.resolved or e.dst.startswith("unresolved:"):
-            k = _KIND_UNRESOLVED.get(e.kind, e.kind)
+            k = _unresolved_kind(e)
             unresolved[k] = unresolved.get(k, 0) + 1
     out_by: dict[tuple[str, str], list[str]] = {}
     in_by: dict[tuple[str, str], list[str]] = {}
@@ -204,8 +212,15 @@ def connections_view(cfg, pack) -> dict:
             consumers = out_by.get((e.dst, "consumed_by"), [])
             for c in consumers or [None]:
                 link(group(e.src), workers(c), "queue", dst.name, loc(e.src), loc(c) if c else loc(e.dst))
-        elif e.kind == "consumed_by":
-            continue  # drawn from the producing side
+        elif e.kind == "calls_http":  # client → endpoint → handler: one line per endpoint
+            for h in out_by.get((e.dst, "served_by"), []):
+                link(group(e.src), group(h), "http", dst.name, loc(e.src), loc(h))
+        elif e.kind == "publishes":  # sender → topic → handler, coloured by broker (`<repo>:msg:<broker>:<name>`)
+            broker = e.dst.split(":msg:", 1)[1].split(":", 1)[0] if ":msg:" in e.dst else "message"
+            for c in out_by.get((e.dst, "consumed_by"), []):
+                link(group(e.src), group(c), broker, dst.name, loc(e.src), loc(c))
+        elif e.kind in ("consumed_by", "served_by"):
+            continue  # drawn from the sending side
         else:
             link(group(e.src), group(e.dst), e.kind, f"{src.name} → {dst.name}", loc(e.src), loc(e.dst))
     keep = {k for k, n in nodes.items() if n["links"] or n["routes"]}

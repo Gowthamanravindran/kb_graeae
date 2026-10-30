@@ -28,12 +28,16 @@ function describe(l: Link, names: (i: number[]) => string[]) {
   if (l.type === "graphql") return `GraphQL: ${list(l.from)} call${names(l.from).length === 1 ? "s" : ""} ${list(l.to)}`;
   if (l.type === "react-router") return `React Router screens in ${list(l.in)}`;
   if (l.type === "bull-queue") return `Bull queues in ${list(l.in)}`;
+  if (l.type === "rest") return `REST: ${list(l.from)} call${names(l.from).length === 1 ? "s" : ""} ${list(l.to)}`;
+  if (l.type === "kafka") return `Kafka topics ${names(l.in).length > 1 ? "across" : "in"} ${list(l.in)}`;
+  if (l.type === "sqs") return `SQS queues ${names(l.in).length > 1 ? "across" : "in"} ${list(l.in)}`;
+  if (l.type === "rabbitmq") return `RabbitMQ queues ${names(l.in).length > 1 ? "across" : "in"} ${list(l.in)}`;
   return `${l.type} in ${list([...l.in, ...l.from])}`;
 }
 
 /** A link still makes sense once removed repos are taken out of it. */
 function live(l: Link, kept: (i: number[]) => number[]) {
-  return l.type === "graphql" ? kept(l.from).length > 0 && kept(l.to).length > 0 : kept([...l.in, ...l.from]).length > 0;
+  return l.type === "graphql" || l.type === "rest" ? kept(l.from).length > 0 && kept(l.to).length > 0 : kept([...l.in, ...l.from]).length > 0;
 }
 
 export function AddProjectDialog({ open, onOpenChange }: { open: boolean; onOpenChange(open: boolean): void }) {

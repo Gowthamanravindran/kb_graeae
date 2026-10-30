@@ -151,3 +151,20 @@ test("graph_layout_stacks_apps_and_services_in_role_columns", async () => {
   expect(at("users::m3").x).toBeGreaterThan(at("web::m0").x);
   expect(at("jobs::m5").x).toBeGreaterThan(at("users::m3").x);
 });
+
+test("graph_legend_names_rest_and_broker_links_present", async () => {
+  const conn = {
+    ...CONN,
+    edges: [...CONN.edges,
+      { id: "e3", source: "sop-web::m-tasks", target: "sop-backend::m-tasks", kind: "http", count: 1, items: [
+        { label: "GET /tasks/:id", from: { repo: "sop-web", file: "src/api.ts", line: 3 }, to: { repo: "sop-backend", file: "src/tasks/get.ts", line: 1 } }] },
+      { id: "e4", source: "sop-backend::m-tasks", target: "sop-backend::m-tasks", kind: "kafka", count: 1, items: [] }],
+    unresolved: { http: 1, message: 2 },
+  };
+  const a = fakeApi({ map: vi.fn(async () => MAP), connections: vi.fn(async () => conn) });
+  renderApp(<MapView />, a, { project: "sop", branch: "main", view: "map" });
+  await userEvent.click(await screen.findByRole("radio", { name: "Graph" }));
+  const legend = await screen.findByRole("list", { name: "Link types" });
+  expect(within(legend).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["GraphQL", "REST", "Queue", "Kafka"]);
+  expect(screen.getByText(/1 REST call, 2 messages couldn't be matched/)).toBeInTheDocument();
+});

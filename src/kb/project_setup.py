@@ -25,6 +25,11 @@ GRAPHQL_CLIENT = {"@apollo/client", "apollo-client", "react-apollo", "@apollo/re
                   "@urql/core", "relay-runtime"}
 GRAPHQL_SERVER = {"apollo-server", "apollo-server-express", "@apollo/server", "graphql-compose", "@nestjs/graphql",
                   "graphql-yoga", "express-graphql", "type-graphql", "mercurius", "graphql-http"}
+REST_SERVER = {"express", "koa", "@koa/router", "koa-router", "fastify", "@nestjs/core", "@hapi/hapi", "restify"}
+REST_CLIENT = {"axios", "ky", "got", "superagent", "node-fetch", "cross-fetch", "isomorphic-fetch", "@angular/common"}
+KAFKA = {"kafkajs", "@nestjs/microservices-kafka", "node-rdkafka", "@confluentinc/kafka-javascript"}
+SQS = {"@aws-sdk/client-sqs", "sqs-consumer", "sqs-producer"}
+RABBITMQ = {"amqplib", "amqp-connection-manager", "@golevelup/nestjs-rabbitmq"}
 DEFAULT_IGNORE = ["**/*.svg", "**/__generated__/**"]
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -97,6 +102,10 @@ def _signals(deps: set[str]) -> set[str]:
         s.add("react_router")
     if deps & {"bull", "bullmq"}:
         s.add("bull")
+    for name, libs in (("rest_server", REST_SERVER), ("rest_client", REST_CLIENT), ("kafka", KAFKA), ("sqs", SQS),
+                       ("rabbitmq", RABBITMQ)):
+        if deps & libs:
+            s.add(name)
     return s
 
 
@@ -155,7 +164,8 @@ def _clean_name(name: str) -> str:
     return name[:64]
 
 
-APP_SIGNALS = {"graphql_client", "graphql_server", "react_router", "bull", "backend"}
+APP_SIGNALS = {"graphql_client", "graphql_server", "react_router", "bull", "backend", "rest_server", "kafka", "sqs",
+               "rabbitmq"}
 
 
 def _read(root: Path, source: str, kind: str, fallback_name: str) -> list[RepoInspection]:
@@ -244,7 +254,8 @@ def _one_or_many(names: list[str]) -> str | list[str]:
 
 def suggest_linkers(repos: list[RepoInspection]) -> list[LinkerConfig]:
     """One link of each kind covering every repo it applies to: all apps that call GraphQL against all services
-    that serve it, routes in every app that has them, and queues matched across every service that uses them."""
+    that serve it, routes in every app that has them, REST calls from every app (and every service with an HTTP
+    client) to every HTTP service, and queues and brokers matched across every service that uses them."""
     out: list[LinkerConfig] = []
     clients = [r for r in repos if "graphql_client" in r.signals]
     servers = [r for r in repos if "graphql_server" in r.signals and r not in clients]
@@ -259,6 +270,15 @@ def suggest_linkers(repos: list[RepoInspection]) -> list[LinkerConfig]:
     queued = [r.name for r in repos if "bull" in r.signals]
     if queued:
         out.append(LinkerConfig(type="bull-queue", in_=_one_or_many(queued)))
+    rest_servers = [r.name for r in repos if "rest_server" in r.signals]
+    # any frontend may call with plain fetch; a service only when it has an HTTP client library
+    rest_clients = [r.name for r in repos if r.signals & {"rest_client", "frontend"} or r.role == "frontend"]
+    if rest_servers and rest_clients:
+        out.append(LinkerConfig(type="rest", from_=_one_or_many(rest_clients), to=_one_or_many(rest_servers)))
+    for broker in ("kafka", "sqs", "rabbitmq"):
+        users = [r.name for r in repos if broker in r.signals]
+        if users:
+            out.append(LinkerConfig(type=broker, in_=_one_or_many(users)))
     return out
 
 

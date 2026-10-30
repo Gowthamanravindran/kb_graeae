@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from kb.graph.model import CodeEdge, CodeNode
 from kb.linkers import ts
-from kb.linkers.base import LinkContext, ensure_file_node, ensure_node, register_linker
+from kb.linkers.base import LinkContext, ensure_file_node, ensure_node, handler_node, register_linker
 
 
 ALL_JOBS = "<all-jobs>"
@@ -79,20 +79,8 @@ class BullQueueLinker:
             return ensure_node(g, CodeNode(id=f"{repo}:queue_topic:{key}", repo=repo, kind="queue_topic", name=key,
                                            file=rel, line=line))
 
-        def handler_node(f: tuple[str, str], handler: str) -> str:
-            found = [d for d in defs.get(handler, ()) if d[0] != f] if handler else []
-            if not found:
-                return file_node(f)
-
-            def closeness(d):  # same repo, then shared leading folders with the registering file, then shorter
-                (drepo, drel), _ = d
-                a, b = drel.split("/")[:-1], f[1].split("/")[:-1]
-                shared = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
-                return (drepo != f[0], -shared, len(drel), drel)
-            (hrepo, hrel), line = min(found, key=closeness)
-            ensure_file_node(g, hrepo, hrel)
-            return ensure_node(g, CodeNode(id=f"{hrepo}:{hrel}#{handler}", repo=hrepo, kind="function", name=handler,
-                                           file=hrel, line=line))
+        def resolve(f: tuple[str, str], name: str) -> str:
+            return handler_node(g, defs, f, name)
 
         for key in sorted(set(producers) | set(consumers)):
             tid = topic(key)
@@ -100,7 +88,7 @@ class BullQueueLinker:
                 edges.append(CodeEdge(src=file_node(f), dst=tid, kind="enqueues", origin="linker", label=key))
             cons = sorted(consumers.get(key, ()))
             for rel, handler in cons:
-                edges.append(CodeEdge(src=tid, dst=handler_node(rel, handler), kind="consumed_by", origin="linker", label=key))
+                edges.append(CodeEdge(src=tid, dst=resolve(rel, handler), kind="consumed_by", origin="linker", label=key))
             if not cons:
                 edges.append(CodeEdge(src=tid, dst=f"unresolved:queue:{key}", kind="consumed_by", origin="linker",
                                       resolved=False, label=key))

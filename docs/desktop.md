@@ -40,6 +40,37 @@ linkers:
 An operation counts as unmatched only when no listed service handles it. Several entries can share one folder or
 link with different `path:` values; that is how a monorepo's apps are listed.
 
+### REST and message brokers
+
+Services that talk over HTTP or through a broker are linked too:
+
+```yaml
+linkers:
+  - type: rest
+    from: [sop-web, sop-backend]     # apps, and services that call other services
+    to: [sop-backend, payments-svc]  # services that serve HTTP routes
+  - type: kafka                      # or sqs, rabbitmq
+    in: [orders-svc, mail-svc]       # a message sent by one service and handled by another links up
+```
+
+- **rest**: `fetch`, `axios` and client objects (`api.get`, `this.http.post`, …) in `from` are matched to Express,
+  Koa-router, Fastify and NestJS (`@Controller` + `@Get`) routes in `to`. Paths are compared from the end, so a
+  router mounted under `/api` or a client with a base URL still meets; `:id`, `{id}` and `${…}` match any part.
+  The route matching the most fixed parts wins. A path no route serves counts as unmatched; a full URL no route
+  serves is taken to be an outside service (Stripe, Google…) and left out. URLs held in variables are skipped.
+- **kafka**: kafkajs `producer.send({topic})` to `consumer.subscribe({topic(s)})`, with the handler given to
+  `consumer.run({eachMessage})`; NestJS `@EventPattern` / `@MessagePattern` and `client.emit`.
+- **sqs**: AWS SDK `SendMessageCommand` / `ReceiveMessageCommand` (and v2 `sendMessage` / `receiveMessage`),
+  `sqs-consumer` and `sqs-producer`. Queues are matched by name (the last part of the queue URL), or by the
+  setting that holds the URL (`process.env.EMAIL_QUEUE_URL`) when both sides read the same one.
+- **rabbitmq**: amqplib `sendToQueue` / `consume`, and `publish(exchange, key)` followed through `bindQueue`
+  (with `*` and `#` patterns) to the queues it reaches; NestJS patterns as for Kafka.
+
+Topic and queue names written as constants (`Topics.ORDER_CREATED`) are looked up across all the listed repos, so
+a literal in one service meets a constant in another. In the Map's **Graph** view each kind has its own colour;
+pick a line to see the calls or messages it stands for. A change to a message handler shows up in test planning
+as "Message <topic>", and an endpoint no screen calls as "API <method> <path>".
+
 ### Adding a project
 
 Choose **Add a project** (on the empty Library, or **Add a project…** in the project menu).
@@ -48,11 +79,15 @@ Choose **Add a project** (on the empty Library, or **Add a project…** in the p
    - a name;
    - a role (frontend or backend);
    - the production branch, chosen from the repo's branches;
-   - for a monorepo, **one entry per app**: `sop-fe` gives `sop-web`, `sop-mobile`, `sop-editor` and `sop-commons`, each pointing at its package. Component kits and other libraries with no GraphQL, routes, queues or server are left out. Remove any app you don't want;
+   - for a monorepo, **one entry per app**: `sop-fe` gives `sop-web`, `sop-mobile`, `sop-editor` and `sop-commons`, each pointing at its package. Component kits and other libraries with no GraphQL, routes, queues, brokers or server are left out. Remove any app you don't want;
    - how the repos connect, with one link of each kind covering every repo it applies to:
      - GraphQL from every app that calls it to every service that serves it;
      - React Router screens in every app that has them;
-     - Bull queues matched across every service that uses them.
+     - Bull queues matched across every service that uses them;
+     - REST from every app (and every service with an HTTP client such as axios) to every service running
+       Express, Koa, Fastify, NestJS or hapi;
+     - Kafka (kafkajs), SQS (`@aws-sdk/client-sqs`, sqs-consumer) and RabbitMQ (amqplib) across every service that
+       uses each.
 
    Change anything that's off.
 3. **Create project.** KB writes `~/.kb/projects/<name>/kb.yaml` and opens the project. You can still edit that file by hand.

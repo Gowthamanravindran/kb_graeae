@@ -62,7 +62,8 @@ def test_inspect_local_monorepo_and_backend(repos, tmp_path):
     assert back.context_docs == ["CONTEXT.md"]
     lk = {(x.type, str(x.from_), str(x.to), str(x.in_)): x.options for x in got.linkers}
     assert lk == {("graphql", "sop-web", "sop-backend", "None"): {"backend_style": "graphql-compose"},
-                  ("react-router", "None", "None", "sop-web"): {}, ("bull-queue", "None", "None", "sop-backend"): {}}
+                  ("react-router", "None", "None", "sop-web"): {}, ("bull-queue", "None", "None", "sop-backend"): {},
+                  ("rest", "sop-web", "sop-backend", "None"): {}}   # the backend runs Express
 
 
 def test_inspect_url_repo_clones_to_scratch_and_reads_remote_default(repos, tmp_path):
@@ -111,7 +112,7 @@ def test_write_project_creates_yaml_and_refuses_duplicates(repos, tmp_path):
     cfg = load_config(path)
     assert [(r.name, r.local_path, r.path, r.default_branch) for r in cfg.repos] == [
         ("sop-web", fe, "packages/sop-web", "master"), ("sop-backend", be, None, "develop")]
-    assert {lk.type for lk in cfg.linkers} == {"graphql", "react-router", "bull-queue"}
+    assert {lk.type for lk in cfg.linkers} == {"graphql", "react-router", "bull-queue", "rest"}
     assert yaml.safe_load(path.read_text())["linkers"][0]["from"] == "sop-web"
     with pytest.raises(KbError, match="already exists"):
         write_project(home, spec)
@@ -162,3 +163,25 @@ def test_graphql_client_library_counts_as_frontend(tmp_path):
     lib = tmp_path / "sop-commons"
     _pkg(lib, {"@apollo/client": "3"})
     assert inspect_repos([str(lib)], tmp_path / "home").repos[0].role == "frontend"
+
+
+def test_signals_and_links_for_rest_and_brokers():
+    from kb.project_setup import RepoInspection, _signals
+
+    assert {"rest_client"} <= _signals({"axios"}) and {"rest_server"} <= _signals({"express"})
+    assert {"kafka"} <= _signals({"kafkajs"}) and {"sqs"} <= _signals({"@aws-sdk/client-sqs"})
+    assert {"rabbitmq"} <= _signals({"amqplib"}) and "sqs" not in _signals({"aws-sdk"})   # v2 SDK is mostly S3
+    web = RepoInspection(source="x", kind="local", name="web", role="frontend", signals={"frontend"})
+    api = RepoInspection(source="x", kind="local", name="api", role="backend", signals={"rest_server", "kafka", "rest_client"})
+    mail = RepoInspection(source="x", kind="local", name="mail", role="backend", signals={"kafka", "sqs"})
+    got = {lk.type: lk for lk in suggest_linkers([web, api, mail])}
+    assert set(got) == {"rest", "kafka", "sqs"}
+    assert (got["rest"].from_, got["rest"].to) == (["web", "api"], "api")   # a frontend can call with plain fetch
+    assert got["kafka"].in_ == ["api", "mail"] and got["sqs"].in_ == "mail"
+
+
+def test_no_rest_link_without_a_server():
+    from kb.project_setup import RepoInspection
+
+    web = RepoInspection(source="x", kind="local", name="web", role="frontend", signals={"frontend", "rest_client"})
+    assert suggest_linkers([web]) == []

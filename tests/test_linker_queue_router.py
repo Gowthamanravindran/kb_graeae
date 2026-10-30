@@ -90,7 +90,7 @@ def test_lazy_import_and_element_prop(tmp_path):
 def test_get_linker_known_and_unknown():
     assert get_linker("graphql").type == "graphql"
     with pytest.raises(ConfigError):
-        get_linker("kafka")
+        get_linker("soap")
 
 
 def test_inline_handler_and_concurrency_never_copy_source(tmp_path):

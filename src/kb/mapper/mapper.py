@@ -20,7 +20,7 @@ SYSTEM = (
     "Write plain English: short sentences, no class or function names in summaries."
 )
 GLOSSARY_LIMIT = 12_000
-ENTRY_KINDS = ("route", "graphql_op", "resolver", "queue_topic", "component")
+ENTRY_KINDS = ("route", "graphql_op", "resolver", "http_route", "queue_topic", "message_topic", "component")
 
 
 class ModuleDraft(BaseModel):

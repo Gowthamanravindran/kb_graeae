@@ -11,22 +11,24 @@ from kb.testplan.delta import GraphDelta
 from kb.testplan.models import ImpactFlow, InventoryItem
 
 MAX_DEPTH = 14
-ENTRY_KINDS = {"route", "queue_topic"}
+ENTRY_KINDS = {"route", "queue_topic", "message_topic"}
+API_KINDS = {"resolver", "http_route"}  # an API entry unless a screen calls it
 
 
 def _parents(g: CodeGraph, nid: str, by_file: dict[tuple[str, str], list[str]], incoming: dict[str, list]) -> list[str]:
-    """One step towards the user: who contains, imports, routes to, calls over GraphQL, or consumes this."""
+    """One step towards the user: who contains, imports, routes to, calls over GraphQL or REST, or consumes this."""
     out: list[str] = []
     node = g.node(nid)
     for e in incoming.get(nid, []):
-        if e.kind in ("contains", "imports", "calls", "indirect_call", "routes_to", "sends_graphql", "handled_by"):
+        if e.kind in ("contains", "imports", "calls", "indirect_call", "routes_to", "sends_graphql", "handled_by",
+                      "calls_http", "served_by"):
             out.append(e.src)
         elif e.kind == "consumed_by":
-            out.append(e.src)  # queue topic consumed by this code: the topic is the entry
+            out.append(e.src)  # queue or message topic consumed by this code: the topic is the entry
     if node.kind == "file":
         # a server file exposes its resolvers; reaching the file means reaching them
         out += [r for r in by_file.get((node.repo, node.file), []) if g.node(r).kind == "resolver"]
-    elif node.kind not in ("resolver", "graphql_op", "route", "queue_topic"):
+    elif node.kind not in ("resolver", "graphql_op", "route", "queue_topic", "http_route", "message_topic"):
         f = f"{node.repo}:{node.file}"
         if g.has_node(f):
             out.append(f)
@@ -43,6 +45,10 @@ def _label(g: CodeGraph, entry: str) -> str:
         return f"Screen {n.name}"
     if n.kind == "queue_topic":
         return f"Background job {n.name}"
+    if n.kind == "message_topic":
+        return f"Message {n.name}"
+    if n.kind == "http_route":
+        return f"API {n.name}"
     if n.kind == "resolver":
         return f"API {n.name.split(':', 1)[-1].split('@')[0]}"
     return n.name
@@ -89,8 +95,8 @@ def reach(head: CodeGraph, base: CodeGraph, base_pack, delta: GraphDelta, invent
             nid, depth = q.popleft()
             node = head.node(nid)
             ups = _parents(head, nid, by_file, incoming) if depth < MAX_DEPTH else []
-            if node.kind in ENTRY_KINDS or (node.kind == "resolver" and not any(
-                    head.node(u).kind == "graphql_op" for u in ups)):
+            if node.kind in ENTRY_KINDS or (node.kind in API_KINDS and not any(
+                    head.node(u).kind == "graphql_op" or (node.kind == "http_route" and head.has_node(u)) for u in ups)):
                 entries.append(nid)
                 if node.kind in ENTRY_KINDS:
                     continue
@@ -113,7 +119,7 @@ def reach(head: CodeGraph, base: CodeGraph, base_pack, delta: GraphDelta, invent
             if len(path) > len(f.path):
                 f.path = path
 
-    enqueuers = {e.src for e in head.edges() if e.kind == "enqueues"}  # one scan, not one per path node
+    enqueuers = {e.src for e in head.edges() if e.kind in ("enqueues", "publishes")}  # one scan, not one per path node
     removed_by_file = {}
     for r in delta.nodes_removed:
         repo, rest = r.split(":", 1)
@@ -131,7 +137,7 @@ def reach(head: CodeGraph, base: CodeGraph, base_pack, delta: GraphDelta, invent
                            if ((i.repo, i.file) in files and (not i.function or i.function in names or i.kind in structural))
                            or (i.kind in structural and (i.repo, i.file) in path_files)]
         f.crosses_repos = len({p.split(":", 1)[0] for p in f.path}) > 1
-        f.has_job = any(head.node(p).kind == "queue_topic" for p in f.path if head.has_node(p)) or any(
+        f.has_job = any(head.node(p).kind in ("queue_topic", "message_topic") for p in f.path if head.has_node(p)) or any(
             p in enqueuers or p.split("#")[0] in enqueuers for p in f.path)
         if base_pack is not None:
             f.modules = sorted({m.id for m in base_pack.modules if set(m.members) & set(f.path + f.changed_functions)})

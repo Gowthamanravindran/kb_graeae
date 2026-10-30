@@ -11,10 +11,17 @@ import { useApp } from "../state";
 const W = 240, H = 48, GAP = 10, LANE_GAP = 260, HEAD = 52;
 const KIND: Record<string, { label: string; color: string }> = {
   graphql: { label: "GraphQL", color: "#2F5BD3" },
+  http: { label: "REST", color: "#1B7F5C" },
   queue: { label: "Queue", color: "#B26A00" },
+  kafka: { label: "Kafka", color: "#8A3FB8" },
+  sqs: { label: "SQS", color: "#C2410C" },
+  rabbitmq: { label: "RabbitMQ", color: "#B4235A" },
 };
 const kindOf = (k: string) => KIND[k] ?? { label: k, color: "#5E6168" };
-const UNRESOLVED: Record<string, [string, string]> = { graphql: ["GraphQL call", "GraphQL calls"], queue: ["queued job", "queued jobs"], route: ["route", "routes"] };
+const UNRESOLVED: Record<string, [string, string]> = {
+  graphql: ["GraphQL call", "GraphQL calls"], http: ["REST call", "REST calls"], queue: ["queued job", "queued jobs"],
+  message: ["message", "messages"], route: ["route", "routes"],
+};
 
 type BoxData = { node: ConnNode; lane: string; selected: boolean; dim: boolean; onSelect(id: string): void };
 type LaneData = { label: string; role: string };
@@ -122,12 +129,15 @@ export function ConnectionsGraph({ modules }: { modules: MapModule[] }) {
   const mine = node ? g.edges.filter((e) => e.source === node.id || e.target === node.id) : [];
   const other = (e: ConnEdge) => byId[e.source === node?.id ? e.target : e.source];
   const unresolved = Object.entries(g.unresolved).filter(([, n]) => n > 0);
+  const present = new Set(g.edges.map((e) => e.kind));   // the legend lists only the kinds of link drawn
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-4 text-xs text-muted">
-        {Object.entries(KIND).map(([k, v]) => (
-          <span key={k} className="flex items-center gap-1.5"><span className="inline-block h-0.5 w-5" style={{ background: v.color }} />{v.label}</span>
-        ))}
+        <ul aria-label="Link types" className="flex flex-wrap items-center gap-4">
+          {Object.entries(KIND).filter(([k]) => present.has(k)).map(([k, v]) => (
+            <li key={k} className="flex items-center gap-1.5"><span className="inline-block h-0.5 w-5" style={{ background: v.color }} />{v.label}</li>
+          ))}
+        </ul>
         <span>Pick a box or a line to see the actual calls.</span>
       </div>
       <div className="flex flex-col gap-5 lg:flex-row">

@@ -73,3 +73,42 @@ def test_reach_scans_edges_a_bounded_number_of_times(tmp_path, monkeypatch):
     monkeypatch.setattr(hg, "edges", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
     reach(hg, bg, None, d, inv)
     assert len(calls) <= 2
+
+
+def _rest_and_message_graph():
+    g = CodeGraph()
+    for n in (N("web:src/Users.tsx", "file"), N("api:src/users.ts", "file"), N("api:src/users.ts#getUser", "function"),
+              N("api:http:GET /users/:id", "http_route"), N("api:http:GET /health", "http_route"),
+              N("api:src/health.ts", "file"), N("api:src/health.ts#health", "function"),
+              N("api:msg:kafka:order.created", "message_topic"), N("mail:src/on.ts", "file"),
+              N("mail:src/on.ts#onOrder", "function"), N("web:route:/users", "route")):
+        if n.kind in ("http_route", "message_topic", "route"):   # entries are labelled by their name
+            n = n.model_copy(update={"name": n.id.split(":", 2)[-1].split(":")[-1] if n.kind != "http_route"
+                                     else n.id.split("http:", 1)[1]})
+        g.add_node(n)
+    for s, d, k in (("web:route:/users", "web:src/Users.tsx", "routes_to"),
+                    ("web:src/Users.tsx", "api:http:GET /users/:id", "calls_http"),
+                    ("api:http:GET /users/:id", "api:src/users.ts#getUser", "served_by"),
+                    ("api:http:GET /health", "api:src/health.ts#health", "served_by"),
+                    ("api:src/users.ts", "api:msg:kafka:order.created", "publishes"),
+                    ("api:msg:kafka:order.created", "mail:src/on.ts#onOrder", "consumed_by")):
+        g.add_edge(CodeEdge(src=s, dst=d, kind=k, origin="linker"))
+    return g
+
+
+def test_rest_call_reaches_the_screen_and_an_uncalled_endpoint_is_its_own_entry():
+    from kb.testplan.delta import GraphDelta
+
+    g = _rest_and_message_graph()
+    flows = reach(g, g, None, GraphDelta(nodes_changed=["api:src/users.ts#getUser", "api:src/health.ts#health"]), [])
+    assert sorted((f.entry_points[0], f.name) for f in flows) == [
+        ("api:http:GET /health", "API GET /health"), ("web:route:/users", "Screen /users")]
+    assert next(f for f in flows if f.entry_points == ["web:route:/users"]).crosses_repos
+
+
+def test_message_consumer_change_enters_at_its_topic():
+    from kb.testplan.delta import GraphDelta
+
+    g = _rest_and_message_graph()
+    [f] = reach(g, g, None, GraphDelta(nodes_changed=["mail:src/on.ts#onOrder"]), [])
+    assert (f.entry_points, f.name, f.has_job) == (["api:msg:kafka:order.created"], "Message order.created", True)

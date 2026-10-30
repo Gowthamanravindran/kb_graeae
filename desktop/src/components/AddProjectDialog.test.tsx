@@ -144,3 +144,11 @@ test("monorepo_apps_each_get_a_card_and_can_be_removed", async () => {
   expect(body.repos.map((r) => [r.name, r.path])).toEqual([["sop-web", "packages/sop-web"], ["sop-backend", null]]);
   expect(body.linkers[0]).toEqual({ type: "graphql", from: "sop-web", to: "sop-backend", options: { backend_style: "graphql-compose" } });
 });
+
+test("describes_rest_and_broker_links", async () => {
+  const result = { ...INSPECTED, linkers: [{ type: "rest", from: ["sop-web", "sop-backend"], to: "sop-backend" },
+    { type: "kafka", in: ["sop-web", "sop-backend"] }, { type: "sqs", in: "sop-backend" }, { type: "rabbitmq", in: "sop-backend" }] };
+  await readRepos(api({ job: vi.fn(async (id: string) => ({ id, kind: "inspect", key: null, state: "done", step: "", progress: 1, result, error: null, created_at: "" })) }));
+  for (const name of ["REST: sop-web, sop-backend call sop-backend", "Kafka topics across sop-web, sop-backend", "SQS queues in sop-backend", "RabbitMQ queues in sop-backend"])
+    expect(screen.getByRole("checkbox", { name })).toBeInTheDocument();
+});
