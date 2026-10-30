@@ -47,6 +47,7 @@ class _PlanLock:
         if self.s.get_bind().dialect.name == "sqlite":
             with _sqlite_guard:
                 self.lock = _sqlite_locks.setdefault(self.key, threading.Lock())
+            self.s.commit()  # end the read snapshot taken before the lock, so what follows sees the latest rows
             self.lock.acquire()
         else:
             self.s.query(TestPlanRow).filter_by(project_id=self.key[0], branch=self.key[1], plan_id=self.key[2]) \
@@ -81,7 +82,9 @@ def _emails(s: Session) -> dict[int, str]:
 
 
 def _slots(s: Session, project_id: int, b: str, plan_id: str) -> list[PlanSlotRow]:
-    return s.query(PlanSlotRow).filter_by(project_id=project_id, branch=b, plan_id=plan_id).all()
+    # always re-read: another request may have changed them since this session last looked
+    return s.query(PlanSlotRow).filter_by(project_id=project_id, branch=b, plan_id=plan_id) \
+        .execution_options(populate_existing=True).all()
 
 
 def _slot_view(r: PlanSlotRow, emails: dict[int, str], now: datetime) -> dict:
@@ -185,3 +188,137 @@ def plan_view(p: str, b: str, plan_id: str, user: User = Depends(current_user), 
 
 RESERVE_FOR = timedelta(hours=24)
 TRACE_FOR = timedelta(minutes=30)
+
+
+# ---------------------------------------------------------------- reservations
+
+PRIORITIES = ("P0", "P1", "P2", "P3")
+
+
+def _free(r: PlanSlotRow, user_id: int, now: datetime) -> bool:
+    if r.assigned_to is not None and r.assigned_to != user_id:
+        return False
+    if r.status in ("planned", "failed"):
+        return True
+    until = _aware(r.reserved_until)
+    return r.status == "reserved" and (until is None or until <= now)  # an abandoned reservation
+
+
+class ReserveIn(BaseModel):
+    slot_ids: list[str] | None = None
+    counts: dict[str, int] | None = None
+    per_flow_cap: int | None = None
+    flow_ids: list[str] | None = None
+
+
+class SlotIdsIn(BaseModel):
+    slot_ids: list[str]
+
+
+@router.post(PREFIX + "/{plan_id}/reservations")
+def reserve(p: str, b: str, plan_id: str, body: ReserveIn, user: User = Depends(current_user),
+            s: Session = Depends(get_session)) -> dict:
+    """Reserve slots for the caller, atomically: concurrent requests never get the same slot. By ids, or by
+    counts per priority in the plan's order (priority, then flow risk, then slot id)."""
+    proj = require_role(s, user, p, "contributor")
+    plan = _plan(s, proj.id, b, plan_id)
+    risk = {f["id"]: f.get("risk", 0.0) for f in plan.impact.get("flows", [])}
+    with _plan_lock(s, proj.id, b, plan_id):
+        now = _now()
+        rows = [r for r in _slots(s, proj.id, b, plan_id) if _free(r, user.id, now)]
+        if body.flow_ids is not None:
+            rows = [r for r in rows if r.data.get("flow_id") in set(body.flow_ids)]
+        chosen: list[PlanSlotRow] = []
+        if body.slot_ids is not None:
+            want = set(body.slot_ids)
+            chosen = sorted((r for r in rows if r.slot_id in want), key=lambda r: r.slot_id)
+        elif body.counts:
+            left = {k: max(0, int(v)) for k, v in body.counts.items()}
+            per_flow: dict[str, int] = {}
+            order = sorted(rows, key=lambda r: (PRIORITIES.index(r.data.get("priority", "P2")) if r.data.get("priority") in PRIORITIES else 9,
+                                                -risk.get(r.data.get("flow_id"), 0.0), r.slot_id))
+            for r in order:
+                prio, flow = r.data.get("priority"), r.data.get("flow_id")
+                if left.get(prio, 0) <= 0:
+                    continue
+                if body.per_flow_cap is not None and per_flow.get(flow, 0) >= body.per_flow_cap:
+                    continue
+                chosen.append(r)
+                left[prio] -= 1
+                per_flow[flow] = per_flow.get(flow, 0) + 1
+        until = now + RESERVE_FOR
+        for r in chosen:
+            r.status, r.reserved_by, r.reserved_until = "reserved", user.id, until
+        s.commit()
+    return {"granted": [r.slot_id for r in chosen], "reserved_until": until.isoformat()}
+
+
+@router.post(PREFIX + "/{plan_id}/reservations/renew")
+def renew(p: str, b: str, plan_id: str, body: SlotIdsIn, user: User = Depends(current_user),
+          s: Session = Depends(get_session)) -> dict:
+    proj = require_role(s, user, p, "contributor")
+    _plan(s, proj.id, b, plan_id)
+    with _plan_lock(s, proj.id, b, plan_id):
+        until = _now() + RESERVE_FOR
+        want = set(body.slot_ids)
+        done = []
+        for r in _slots(s, proj.id, b, plan_id):
+            if r.slot_id in want and r.status == "reserved" and r.reserved_by == user.id:
+                r.reserved_until = until
+                done.append(r.slot_id)
+        s.commit()
+    return {"renewed": sorted(done), "reserved_until": until.isoformat()}
+
+
+@router.delete(PREFIX + "/{plan_id}/reservations")
+def release(p: str, b: str, plan_id: str, body: SlotIdsIn, user: User = Depends(current_user),
+            s: Session = Depends(get_session)) -> dict:
+    """Give slots back. A contributor releases their own; a maintainer (the QA lead) anyone's."""
+    from kb_registry.auth import role_of
+
+    proj = require_role(s, user, p, "contributor")
+    _plan(s, proj.id, b, plan_id)
+    lead = user.is_admin or role_of(s, user, proj) == "maintainer"
+    with _plan_lock(s, proj.id, b, plan_id):
+        want = set(body.slot_ids)
+        done = []
+        for r in _slots(s, proj.id, b, plan_id):
+            if r.slot_id in want and r.status == "reserved" and (lead or r.reserved_by == user.id):
+                r.status, r.reserved_by, r.reserved_until = "planned", None, None
+                done.append(r.slot_id)
+        s.commit()
+    return {"released": sorted(done)}
+
+
+class AssignIn(BaseModel):
+    slot_ids: list[str] | None = None
+    flow_ids: list[str] | None = None
+    email: str | None
+
+
+@router.post(PREFIX + "/{plan_id}/assign")
+def assign(p: str, b: str, plan_id: str, body: AssignIn, user: User = Depends(current_user),
+           s: Session = Depends(get_session)) -> dict:
+    """The QA lead assigns slots (or whole flows) to a member, or unassigns them (email null). A reservation held
+    by anyone else is released, so the assignee can take the slot."""
+    from kb_registry.auth import role_of
+
+    proj = require_role(s, user, p, "maintainer")
+    _plan(s, proj.id, b, plan_id)
+    target = None
+    if body.email is not None:
+        target = s.query(User).filter_by(email=body.email).one_or_none()
+        if target is None or role_of(s, target, proj) is None:
+            raise HTTPException(400, f"{body.email} is not a member of {p}")
+    with _plan_lock(s, proj.id, b, plan_id):
+        ids, flows = set(body.slot_ids or []), set(body.flow_ids or [])
+        done = []
+        for r in _slots(s, proj.id, b, plan_id):
+            if r.slot_id not in ids and r.data.get("flow_id") not in flows:
+                continue
+            r.assigned_to = target.id if target else None
+            if r.status == "reserved" and r.reserved_by not in (None, r.assigned_to):
+                r.status, r.reserved_by, r.reserved_until = "planned", None, None
+            done.append(r.slot_id)
+        s.commit()
+    return {"assigned": sorted(done)}
