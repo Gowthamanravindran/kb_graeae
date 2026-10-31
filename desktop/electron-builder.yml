@@ -18,7 +18,13 @@ mac:
     - target: dmg
       arch: [arm64, x64]
   category: public.app-category.developer-tools
-  identity: null # unsigned for now; see docs/desktop.md for first-launch steps
+  # Signing: a "Developer ID Application" certificate in the keychain (or CSC_LINK + CSC_KEY_PASSWORD) is found
+  # automatically; without one the build is unsigned. Notarization runs when APPLE_API_KEY / APPLE_API_KEY_ID /
+  # APPLE_API_ISSUER (or APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID) are set. See docs/desktop.md.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: signing/entitlements.mac.plist
+  entitlementsInherit: signing/entitlements.mac.inherit.plist
 win:
   target: nsis
 linux:

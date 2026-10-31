@@ -176,9 +176,52 @@ npm --prefix desktop run dist            # app for the current OS → desktop/re
 | Windows | NSIS installer | build on Windows |
 | Linux | `KB Desktop-<v>.AppImage` | `npm --prefix desktop run dist -- --linux AppImage` |
 
-The builds are **unsigned** for now.
+### Signing and notarizing for macOS
 
-- **macOS, first launch:** right-click the app in Applications → **Open** → **Open**. After that it opens normally. If macOS says the app "is damaged", run `xattr -dr com.apple.quarantine "/Applications/KB Desktop.app"`.
+A Mac only opens an app from someone else without warnings when it is **signed with a Developer ID and notarized**
+by Apple. The build does both automatically once the credentials are there; without them it builds unsigned.
+
+One-time setup (needs the Apple Developer Program, USD 99 a year, as an individual or your company):
+1. In Xcode → Settings → Accounts (or developer.apple.com → Certificates), create a **Developer ID Application**
+   certificate. It lands in your login keychain; `security find-identity -v -p codesigning` should list
+   `Developer ID Application: <Name> (<TEAMID>)`.
+2. In App Store Connect → Users and Access → Integrations → **App Store Connect API**, create a key with the
+   Developer role and download the `.p8` (it can be downloaded only once). Note its Key ID and the Issuer ID.
+
+Each release, on a Mac:
+
+```bash
+export APPLE_API_KEY=~/keys/AuthKey_ABC123XYZ.p8   # the .p8 file
+export APPLE_API_KEY_ID=ABC123XYZ
+export APPLE_API_ISSUER=00000000-0000-0000-0000-000000000000
+bash packaging/build-sidecar.sh
+npm --prefix desktop run dist
+```
+
+electron-builder signs the app and everything inside it, including the bundled engine (`signing/` holds the
+Hardened Runtime entitlements), sends it to Apple, waits for notarization (usually a few minutes) and staples the
+ticket. Check the result before sharing:
+
+```bash
+spctl -a -vvv -t exec "desktop/release/mac-arm64/KB Desktop.app"   # expect: accepted, source=Notarized Developer ID
+xcrun stapler validate "desktop/release/mac-arm64/KB Desktop.app"
+```
+
+Then open the dmg on a second Mac (or a new user account) and run a branch analysis once, which exercises the
+bundled engine under the Hardened Runtime. Instead of the API key, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`
+and `APPLE_TEAM_ID` also work. In CI, put the certificate in `CSC_LINK` (base64 `.p12`) and `CSC_KEY_PASSWORD`.
+
+### Opening an unsigned build
+
+Without signing, macOS (15 Sequoia and later) blocks the app the first time, and right-click → **Open** no
+longer works around it. The person installing it:
+1. Drags **KB Desktop** to Applications and double-clicks it. macOS says it can't verify the app: click **Done**.
+2. Opens **System Settings → Privacy & Security**, scrolls down to *"KB Desktop" was blocked…* and clicks
+   **Open Anyway**, then confirms with their password.
+
+If macOS instead says the app "is damaged and can't be opened", run in Terminal:
+`xattr -dr com.apple.quarantine "/Applications/KB Desktop.app"`.
+
 - **Windows:** SmartScreen → **More info** → **Run anyway**.
 
 ### Sharing the app: what the other person needs
@@ -206,7 +249,7 @@ a **Retry** button, and **Open logs** (`$KB_HOME/logs/`).
 
 1. In the repo: `uv sync && npm --prefix desktop install`.
 2. `bash packaging/build-sidecar.sh && npm --prefix desktop run dist`, and check that `desktop/release/` has a `.dmg`.
-3. Install the dmg, then first-launch with right-click → Open. Expect the Library with the empty-state message.
+3. Install the dmg and open it (signed: just open it; unsigned: see "Opening an unsigned build"). Expect the Library with the empty-state message.
 4. Add a project: **Add a project** → name it `sop`, paste the links of `sop-fe-master` and `sop-backend-main` (or choose your clones) → **Read repos**. Check that the web repo uses `packages/sop-web`, the GraphQL link uses `graphql-compose`, and the production branches are right → **Create project**.
 5. **Analyse a branch** → `main`. Watch the progress steps. The row ends as "Private · local only".
 6. **Open** → the Map shows the SOP modules in plain English. Toggle **Code names**, pick **Tasks**, then **Ask about Tasks**. Switch to **Graph**: each repo is a column. Lines show GraphQL calls from web to backend and the jobs queued for workers. Pick a line to list the operations with their file and line on both sides.
