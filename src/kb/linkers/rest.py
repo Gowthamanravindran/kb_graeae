@@ -166,7 +166,7 @@ class RestLinker:
 
     def edges(self, ctx, routes: list[Route], calls: list[ClientCall], defs) -> list[CodeEdge]:
         g = ctx.graph
-        index = SymbolIndex(g)
+        symbols = SymbolIndex(g)
         edges: list[CodeEdge] = []
         nodes: dict[tuple[str, str], str] = {}
         seen: set[tuple[str, str]] = set()
@@ -177,7 +177,7 @@ class RestLinker:
                 nodes[key] = ensure_node(g, CodeNode(id=f"{r.file[0]}:http:{r.name}", repo=r.file[0], kind="http_route",
                                                      name=r.name, file=r.file[1], line=r.line))
             nid = nodes[key]
-            dst = method_node(g, r.ref[0], *r.ref[1:], index=index) if r.ref else handler_node(g, defs, r.file, r.handler)
+            dst = method_node(g, r.ref[0], *r.ref[1:], index=symbols) if r.ref else handler_node(g, defs, r.file, r.handler)
             if (nid, dst) not in seen:
                 seen.add((nid, dst))
                 edges.append(CodeEdge(src=nid, dst=dst, kind="served_by", origin="linker", label=r.name))
@@ -188,20 +188,20 @@ class RestLinker:
         # index each route by its rarest fixed segment and that segment's place from the end, so a call is only
         # scored against routes that could line up with it
         freq = Counter(s for ss in segs for s in ss if s != "*")
-        index: dict[tuple[int, str], list[int]] = {}
+        by_segment: dict[tuple[int, str], list[int]] = {}
         by_place: dict[int, list[int]] = {}
         for i, ss in enumerate(segs):
             fixed = [(freq[s], k, s) for k, s in enumerate(reversed(ss), 1) if s != "*"]
             if fixed:
                 _, k, s = min(fixed)
-                index.setdefault((k, s), []).append(i)
+                by_segment.setdefault((k, s), []).append(i)
                 by_place.setdefault(k, []).append(i)
         sent: set[tuple[str, str]] = set()
         for c in calls:
             cs = segments(c.path)
             cand: set[int] = set()
             for k in range(1, len(cs) + 1):
-                cand.update(by_place.get(k, ()) if cs[-k] == "*" else index.get((k, cs[-k]), ()))
+                cand.update(by_place.get(k, ()) if cs[-k] == "*" else by_segment.get((k, cs[-k]), ()))
             scored = [(sc, i) for i in cand if routes[i].method in (c.method, "ALL")
                       and (sc := score(segs[i], cs)) is not None]
             src = ensure_file_node(g, *c.file)

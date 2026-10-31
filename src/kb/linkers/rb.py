@@ -280,3 +280,16 @@ def method_spans(tree) -> list[tuple[str, str, int, int]]:
 
     visit(tree.root_node, "")
     return out
+
+
+def nesting(node) -> list[str]:
+    """The modules/classes around a node, innermost first, as full names (`Crm::Y`, `Crm`) — Ruby's constant
+    lookup order."""
+    names = []
+    p = node.parent
+    while p is not None:
+        if p.type in ("class", "module"):
+            names.append(const_path(p.child_by_field_name("name")))
+        p = p.parent
+    outer = list(reversed(names))
+    return ["::".join(outer[:i]) for i in range(len(outer), 0, -1)]

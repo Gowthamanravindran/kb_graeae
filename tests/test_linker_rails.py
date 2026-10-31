@@ -153,10 +153,10 @@ def test_sidekiq_and_active_job_link_callers_to_perform(tmp_path):
                               file="app/jobs/sync_user_job.rb", line=3))
     edges = run(SidekiqLinker(), c)
     enq = sorted(c.graph.node(e.dst).name for e in edges if e.kind == "enqueues")
-    assert enq == ["GhostJob", "InvoiceJob", "MailerJob", "ReportWorker", "SyncUserJob"]   # perform_now runs inline
+    assert enq == ["Billing::InvoiceJob", "GhostJob", "MailerJob", "ReportWorker", "SyncUserJob"]  # perform_now: inline
     cons = {c.graph.node(e.src).name: e.dst for e in edges if e.kind == "consumed_by" and e.resolved}
     assert cons["SyncUserJob"] == graphify_perform
-    assert cons["InvoiceJob"].endswith("app/jobs/billing/invoice_job.rb#Billing::InvoiceJob.perform")
+    assert cons["Billing::InvoiceJob"].endswith("app/jobs/billing/invoice_job.rb#Billing::InvoiceJob.perform")
     assert cons["ReportWorker"].startswith("worker:app/workers/report_worker.rb#")      # another service's worker
     assert c.graph.node("api:queue_topic:SyncUserJob").kind == "queue_topic"
     assert [e.dst for e in edges if not e.resolved] == ["unresolved:queue:GhostJob"]
@@ -204,3 +204,49 @@ def test_kafka_between_rails_karafka_racecar_and_node(tmp_path):
                     ("rails:app/services/order_publisher.rb", "audit"), ("rails:app/services/order_publisher.rb", "bulk"),
                     ("rails:app/services/order_publisher.rb", "orders.created")]
     assert [e.dst for e in edges if not e.resolved] == ["unresolved:message:@topic"]
+
+
+# ---------------------------------------------------------------- final review fixes
+
+def _routes(tmp_path, text):
+    app = write(tmp_path / "app", {"config/routes.rb": f"Rails.application.routes.draw do\n{text}\nend\n"})
+    return {(r.method, r.path) for r in RoutesReader(app, "app", app).read()}
+
+
+def test_percent_i_and_w_arrays(tmp_path):
+    got = _routes(tmp_path, "resources :users, only: %i[index show]\nresources :posts, except: %i[new edit destroy update create]\n"
+                            "match 'hook', to: 'hooks#run', via: %w[post put]")
+    assert got == {("GET", "/users"), ("GET", "/users/:id"), ("GET", "/posts"), ("GET", "/posts/:id"),
+                   ("POST", "/hook"), ("PUT", "/hook")}
+
+
+def test_shallow_nesting(tmp_path):
+    got = _routes(tmp_path, "resources :posts, only: [], shallow: true do\n  resources :comments, only: [:index, :show]\nend\n"
+                            "shallow do\n  resources :boards, only: [] do\n    resources :cards, only: [:create, :destroy]\n  end\nend")
+    assert got == {("GET", "/posts/:post_id/comments"), ("GET", "/comments/:id"),
+                   ("POST", "/boards/:board_id/cards"), ("DELETE", "/cards/:id")}
+
+
+def test_concerns_statement_and_on_member_inside_concern(tmp_path):
+    got = _routes(tmp_path, "concern :c do\n  get :preview, on: :member\n  resources :likes, only: :create\nend\n"
+                            "resources :users, only: [] do\n  concerns :c\nend")
+    assert got == {("GET", "/users/:id/preview"), ("POST", "/users/:user_id/likes")}
+
+
+def test_namespaced_jobs_with_the_same_short_name_dont_collide(tmp_path):
+    from kb.linkers.sidekiq import SidekiqLinker
+
+    api = write(tmp_path / "api", {
+        "app/jobs/billing/sync_job.rb": "module Billing\n  class SyncJob\n    include Sidekiq::Job\n    def perform; end\n  end\nend\n",
+        "app/jobs/crm/sync_job.rb": "module Crm\n  class SyncJob\n    include Sidekiq::Job\n    def perform; end\n  end\nend\n",
+        "app/jobs/solo_job.rb": "class SoloJob\n  include Sidekiq::Job\n  def perform; end\nend\n",
+        "app/x.rb": "Crm::SyncJob.perform_in(5, 1)\nSidekiq::Client.push('class' => 'Billing::SyncJob')\nSoloJob.perform_async\n",
+        "app/crm/y.rb": "module Crm\n  class Y\n    def go = SyncJob.perform_async\n  end\nend\n",
+    })
+    c = ctx({"type": "sidekiq", "in": "api"}, repos=("api",), roots={"api": api})
+    edges = run(SidekiqLinker(), c)
+    cons = sorted((c.graph.node(e.src).name, e.dst.split("#")[0]) for e in edges if e.kind == "consumed_by" and e.resolved)
+    assert cons == [("Billing::SyncJob", "api:app/jobs/billing/sync_job.rb"), ("Crm::SyncJob", "api:app/jobs/crm/sync_job.rb"),
+                    ("SoloJob", "api:app/jobs/solo_job.rb")]
+    enq = sorted((e.src, c.graph.node(e.dst).name) for e in edges if e.kind == "enqueues")
+    assert ("api:app/crm/y.rb", "Crm::SyncJob") in enq                   # resolved through the caller's module

@@ -19,6 +19,9 @@ AR_METHODS = {"where", "find", "find_by", "find_by!", "find_each", "find_in_batc
               "update_all", "delete_all", "destroy_all", "find_or_create_by", "find_or_create_by!",
               "find_or_initialize_by", "first_or_create", "exists?", "count", "pluck", "insert_all", "upsert_all",
               "upsert", "insert", "includes", "joins", "sum", "average", "minimum", "maximum", "all", "none"}
+CHAIN_QUERY = {"where", "find", "find_by", "find_by!", "order", "pluck", "includes", "joins", "exists?", "find_each"}
+NOT_RECORDS = {"params", "session", "cookies", "headers", "opts", "options", "attrs", "attributes", "hash", "h",
+               "data", "payload", "body", "env", "request", "response", "flash", "args", "kwargs", "config"}
 PERSIST = {"save", "save!", "update", "update!", "destroy", "destroy!", "delete", "update_column", "update_columns",
            "update_attribute", "increment!", "decrement!", "toggle!", "touch", "reload"}
 NOT_MODELS = {"Rails", "Time", "Date", "DateTime", "JSON", "ENV", "Sidekiq", "Karafka", "Faraday", "HTTParty",
@@ -144,9 +147,20 @@ def extract(source: str, start: int, end: int):
                     add("field", k, ["sent"], line)
             else:
                 root, names = _chain(n)
-                if root is not None and root.type in ("constant", "scope_resolution") \
-                        and rb.const_path(root).split("::")[0] not in NOT_MODELS and AR_METHODS & set(names):
+                rname = _t(root) if root is not None else ""
+                model = root is not None and root.type in ("constant", "scope_resolution") and \
+                    rb.const_path(root).split("::")[0] not in NOT_MODELS and not rb.const_path(root).isupper() and \
+                    re.search(r"[a-z]", rb.const_path(root).rsplit("::", 1)[-1]) is not None
+                record = root is not None and root.type in ("instance_variable", "identifier", "self", "call") and \
+                    rname.lstrip("@") not in NOT_RECORDS
+                if model and AR_METHODS & set(names):          # Order.where(…), not STATUSES.find / CSV.parse.count
                     add("query", _t(n), ["runs"], line)
-                elif c.name in PERSIST and root is not None and root.type in ("instance_variable", "identifier", "self"):
+                elif record and len(names) > 1 and CHAIN_QUERY & set(names[1:] + names[:1]):
+                    add("query", _t(n), ["runs"], line)     # current_user.orders.where(…), @orders.where(…)
+                elif record and len(names) == 1 and CHAIN_QUERY & set(names) and root.type == "instance_variable":
                     add("query", _t(n), ["runs"], line)
+                elif c.name in PERSIST and record and not (c.name in ("delete", "update") and c.args and
+                                                          c.args[0].type in ("simple_symbol", "string", "hash")) \
+                        and not (c.name == "update" and c.kwargs and not c.args):
+                    add("query", _t(n), ["runs"], line)       # @order.destroy!, not opts.update(b: 2)
     return out

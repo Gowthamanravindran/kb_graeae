@@ -213,3 +213,15 @@ def test_a_rails_app_in_a_subfolder_is_found(tmp_path):
     (root / "frontend" / "package.json").write_text('{"dependencies": {"react": "18"}}')
     got = inspect_repos([str(root)], tmp_path / "home")
     assert {(r.name, r.path, r.role) for r in got.repos} >= {("backend", "backend", "backend")}
+
+
+def test_a_js_repo_with_an_unrelated_gemfile_keeps_its_root_app(tmp_path):
+    root = tmp_path / "shop"
+    root.mkdir()
+    (root / "package.json").write_text('{"dependencies": {"express": "4", "axios": "1"}}')
+    (root / "client").mkdir()
+    (root / "client" / "package.json").write_text('{"dependencies": {"react": "18", "react-router-dom": "6"}}')
+    (root / "docs").mkdir()
+    (root / "docs" / "Gemfile").write_text("gem 'jekyll'\n")
+    got = inspect_repos([str(root)], tmp_path / "home")
+    assert [(r.name, r.path, r.role) for r in got.repos] == [("shop", None, "backend")]

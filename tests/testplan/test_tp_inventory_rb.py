@@ -154,3 +154,12 @@ linkers:
     assert "Screen /users/:id" in flows and "Background job SyncUserJob" in flows, list(flows)
     screen = flows["Screen /users/:id"]
     assert screen.crosses_repos and any(p.startswith("api:http:GET /api/v1/users/:id") for p in screen.path)
+
+
+def test_queries_are_model_queries_not_hash_or_constant_list_calls():
+    src = ("def go\n  attrs.delete(:note)\n  params.delete(:foo)\n  opts.update(b: 2)\n  STATUSES.find { |s| s }\n"
+           "  CSV.parse(body).count\n  current_user.orders.where(paid: true)\n  @orders.where(paid: true).pluck(:id)\n"
+           "  @order.destroy!\n  Order.find(1)\nend\n")
+    got = sorted(d.norm for d in extract_decisions(src, "x.rb", 1, 11) if d.kind == "query")
+    assert got == ["@order.destroy!", "@orders.where(paid: true).pluck(:id)", "Order.find(1)",
+                   "current_user.orders.where(paid: true)"]

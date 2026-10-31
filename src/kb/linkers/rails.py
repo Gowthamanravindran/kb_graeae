@@ -54,20 +54,31 @@ def _names(n) -> list[str]:
     """`:a`, `'a'`, `[:a, :b]`, `%i[a b]` -> names"""
     if n is None:
         return []
-    if n.type == "array":
+    if n.type in ("array", "symbol_array", "string_array"):
         return [v for c in n.named_children if (v := rb.literal(c)) is not None]
     v = rb.literal(n)
     return [v] if v is not None else []
 
 
 class _Scope:
-    def __init__(self, path=(), module=(), controller=None, resource=None):
-        self.path, self.module, self.controller, self.resource = tuple(path), tuple(module), controller, resource
+    """`path` is the full URL prefix; `ns_path` the part from namespaces and scopes only (no parent resources),
+    which is where shallow member routes go."""
 
-    def child(self, path=(), module=(), controller=None, resource=None):
-        return _Scope(self.path + tuple(p for p in path if p), self.module + tuple(m for m in module if m),
+    def __init__(self, path=(), module=(), controller=None, resource=None, ns_path=(), shallow=False):
+        self.path, self.module, self.controller, self.resource = tuple(path), tuple(module), controller, resource
+        self.ns_path, self.shallow = tuple(ns_path), shallow
+
+    def child(self, path=(), module=(), controller=None, resource=None, nest=False, shallow=None):
+        add = tuple(p for p in path if p)
+        return _Scope(self.path + add, self.module + tuple(m for m in module if m),
                       controller if controller is not None else self.controller,
-                      resource if resource is not None else self.resource)
+                      resource if resource is not None else self.resource,
+                      self.ns_path if nest else self.ns_path + add,
+                      self.shallow if shallow is None else shallow)
+
+    @property
+    def nested(self) -> bool:
+        return self.path != self.ns_path
 
 
 def _clean(p: str) -> list[str]:
@@ -124,6 +135,8 @@ class RoutesReader:
             self.body(c.block, scope.child(path=_clean(path or ""), module=(mod,) if mod else ()))
         elif n in ("constraints", "defaults", "with_options"):
             self.body(c.block, scope)
+        elif n == "shallow":
+            self.body(c.block, scope.child(shallow=True))
         elif n == "controller" and c.args:
             self.body(c.block, scope.child(controller=rb.literal(c.args[0])))
         elif n == "concern" and c.args and c.block is not None:
@@ -154,32 +167,54 @@ class RoutesReader:
         ctrl = rb.literal(c.kwargs.get("controller")) or (plural(name) if singular_res else name)
         mod = rb.literal(c.kwargs.get("module"))
         param = rb.literal(c.kwargs.get("param")) or "id"
-        inner = scope.child(path=_clean(path), module=(mod,) if mod else (), controller=ctrl)
+        shallow = scope.shallow or (c.kwargs.get("shallow") is not None and rb._text(c.kwargs["shallow"]) == "true")
+        inner = scope.child(path=_clean(path), module=(mod,) if mod else (), controller=ctrl, nest=True)
+        # shallow nesting: member routes (`/comments/:id`) drop the parent resources, keeping namespaces
+        member_base = _Scope(scope.ns_path + tuple(_clean(path)), inner.module, ctrl, None,
+                             scope.ns_path + tuple(_clean(path))) if scope.shallow and scope.nested else inner
         for a in actions:
             meth, tail, needs_id = REST_ACTIONS[a]
-            segs = list(inner.path) + ([f":{param}"] if needs_id and not singular_res else []) + ([tail] if tail else [])
-            self.add([meth] + (["PUT"] if a == "update" else []), segs, inner, ctrl, a, c.line)
-        res = inner.child(resource=(name, "nested", None if singular_res else param))
-        nested = res if singular_res else res.child(path=(f":{singular(name)}_{param}",))
+            base = member_base if needs_id and not singular_res else inner
+            segs = list(base.path) + ([f":{param}"] if needs_id and not singular_res else []) + ([tail] if tail else [])
+            self.add([meth] + (["PUT"] if a == "update" else []), segs, base, ctrl, a, c.line)
+        res = inner.child(resource=(name, "nested", None if singular_res else param), shallow=shallow)
+        nested = res if singular_res else res.child(path=(f":{singular(name)}_{param}",), nest=True)
+        member = member_base.child(path=() if singular_res else (f":{param}",), resource=(name, "member", param),
+                                   shallow=shallow, nest=True)
+        ctx = (name, param, res, nested, member)
         for concern in _names(c.kwargs.get("concerns")):
-            if concern in self.concerns:
-                self.body(self.concerns[concern], nested)
+            self.concern(concern, ctx)
         if c.block is not None:
-            for s in rb.statements(c.block):
-                if s.name in ("member", "collection") and not s.receiver:
-                    target = res.child(path=() if s.name == "collection" else (f":{param}",),
-                                       resource=(name, s.name, param))
-                    self.body(s.block, target)
-                elif s.name in VERBS + ("match",) and not s.receiver:
-                    on = rb.literal(s.kwargs.get("on"))
-                    if on == "member":
-                        self.verb(s, res.child(path=(f":{param}",), resource=(name, "member", param)))
-                    elif on == "collection":
-                        self.verb(s, res.child(resource=(name, "collection", param)))
-                    else:
-                        self.verb(s, nested.child(resource=(name, "nested", param)))
+            self.resource_body(rb.statements(c.block), ctx)
+
+    def concern(self, name: str, ctx) -> None:
+        if name in self.concerns:
+            self.resource_body(rb.statements(self.concerns[name]), ctx)
+
+    def resource_body(self, stmts: list[rb.Call], ctx) -> None:
+        """Statements inside `resources :x do … end` or a concern applied to it."""
+        name, param, res, nested, member = ctx
+        for s in stmts:
+            if s.receiver:
+                continue
+            if s.name == "member":
+                self.body(s.block, member)
+            elif s.name == "collection":
+                self.body(s.block, res.child(resource=(name, "collection", param)))
+            elif s.name == "concerns":
+                for a in s.args:
+                    for concern in _names(a):
+                        self.concern(concern, ctx)
+            elif s.name in VERBS + ("match",):
+                on = rb.literal(s.kwargs.get("on"))
+                if on == "member":
+                    self.verb(s, member)
+                elif on == "collection":
+                    self.verb(s, res.child(resource=(name, "collection", param)))
                 else:
-                    self.statement(s, nested)
+                    self.verb(s, nested.child(resource=(name, "nested", param)))
+            else:
+                self.statement(s, nested)
 
     def verb(self, c: rb.Call, scope: _Scope) -> None:
         if c.name == "root":

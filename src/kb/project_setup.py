@@ -157,10 +157,11 @@ def _packages(root: Path) -> list[Path]:
             rel = p.relative_to(root).as_posix()
             if p.is_dir() and (p / "package.json").exists() and "node_modules" not in p.parts and fnmatch.fnmatch(rel, g):
                 out.append(p)
-    if not (root / "Gemfile").exists():
-        # Ruby apps in sub-folders (`backend/` with a Gemfile), and then their sibling JS apps too
+    if not (root / "Gemfile").exists() and not _signals(_deps(root)) & APP_SIGNALS:
+        # Ruby web apps in sub-folders (`backend/` with Rails in its Gemfile), then their sibling JS apps too. A
+        # Gemfile for docs (Jekyll) or iOS (CocoaPods) is not an app, and a root that is an app itself stays whole.
         rails = [p.parent for p in list(root.glob("*/Gemfile")) + list(root.glob("*/*/Gemfile"))
-                 if not {"node_modules", "vendor"} & set(p.parts)]
+                 if not {"node_modules", "vendor"} & set(p.parts) and _deps(p.parent) & RUBY_SERVER]
         if rails:
             out += rails + [p.parent for p in root.glob("*/package.json") if p.parent not in out]
     return sorted(set(out))

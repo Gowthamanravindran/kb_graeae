@@ -88,14 +88,16 @@ linkers:
 ```
 
 - **Routes** come from `config/routes.rb` (and `draw(:name)` files): `resources` / `resource` with `only:` and
-  `except:`, nesting, `member` / `collection` and `on:`, `namespace`, `scope`, `concern`s, and `get 'x', to:
-  'c#a'` style routes. Each route points at its controller action, so `GET /api/v1/users/:id` leads to
+  `except:` (also as `%i[…]`), nesting, `shallow` nesting, `member` / `collection` and `on:`, `namespace`, `scope`,
+  `concern`s (`concerns: […]` or `concerns :x`), and `get 'x', to: 'c#a'` style routes. Each route points at its controller action, so `GET /api/v1/users/:id` leads to
   `Api::V1::UsersController#show`. Every Rails app in a repo (each folder with a `config/routes.rb`) is read.
-- **HTTP calls** from Ruby: Faraday, HTTParty (including `self.class.get` and `base_uri` classes), RestClient,
+- **HTTP calls** from Ruby: Faraday, HTTParty (including `self.class.get` and bare `get` in an HTTParty class),
+  RestClient,
   http.rb, Typhoeus, Excon and Net::HTTP. A path relative to a client's base URL (`conn.get('charges')`) is
   matched when a service serves it, and otherwise left out rather than counted as unmatched.
 - **Jobs**: Sidekiq `perform_async` / `perform_in` / `perform_at` / `perform_bulk` and `Sidekiq::Client.push`, and
-  ActiveJob `perform_later` (also through `.set(…)`), lead to the job's `perform`. `perform_now` runs inline and
+  ActiveJob `perform_later` (also through `.set(…)`), lead to the job's `perform`. Jobs are matched by full class
+  name, looked up from the caller's modules as Ruby does, so `Billing::SyncJob` and `Crm::SyncJob` stay apart. `perform_now` runs inline and
   isn't counted.
 - **Kafka**: Karafka routes (`topic :orders do consumer OrdersConsumer end` → `#consume`), WaterDrop and
   `Karafka.producer.produce_*`, ruby-kafka, Racecar (`subscribes_to` → `#process`) and rdkafka. Topic constants

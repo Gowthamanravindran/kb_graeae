@@ -4,7 +4,9 @@
 
 Job classes are those that include `Sidekiq::Job` / `Sidekiq::Worker`, inherit from a `…Job` class
 (`ApplicationJob`, `ActiveJob::Base`), or are named `…Job` / `…Worker`, and define `perform`. A job is keyed by
-its class name without modules; a class in the caller's repo wins over one elsewhere. `perform_now` runs inline,
+its full class name, resolved from the caller's modules as Ruby does (`SyncJob` inside `module Crm` is
+`Crm::SyncJob`); a bare name defined once anywhere is that class; a class in the caller's repo wins over one in
+another repo. `perform_now` runs inline,
 so it is not a queued job. Edges are the Bull linker's: caller file -enqueues-> `<repo>:queue_topic:<Job>`
 -consumed_by-> `perform`.
 """
@@ -33,12 +35,12 @@ def _job_name(c: rb.Call) -> str:
         while r is not None and r.type == "call" and (m := r.child_by_field_name("method")) is not None \
                 and rb._text(m) in ("set", "delay"):
             r = r.child_by_field_name("receiver")
-        return rb.const_path(r).rsplit("::", 1)[-1] if r is not None else ""
+        return rb.const_path(r) if r is not None else ""
     if c.name in ("push", "push_bulk") and c.receiver == "Sidekiq::Client":
         v = c.kwargs.get("class")
         if v is None:
             v = next((val for k, val in c.rockets if rb.literal(k) == "class"), None)
-        return (rb.literal(v) or rb.const_path(v)).rsplit("::", 1)[-1] if v is not None else ""
+        return (rb.literal(v) or rb.const_path(v)).removeprefix("::") if v is not None else ""
     return ""
 
 
@@ -49,8 +51,9 @@ class SidekiqLinker:
     def run(self, ctx: LinkContext) -> list[CodeEdge]:
         g = ctx.graph
         index = SymbolIndex(g)
-        jobs: dict[str, list[tuple[tuple[str, str], rb.RbClass]]] = {}
-        calls: list[tuple[tuple[str, str], str, int]] = []
+        jobs: dict[str, list[tuple[tuple[str, str], rb.RbClass]]] = {}   # full class name -> definitions
+        short: dict[str, set[str]] = {}                                   # class name without modules -> full names
+        calls: list[tuple[tuple[str, str], str, list[str], int]] = []
         for repo in ctx.config.ins():
             root = ctx.checkouts[repo].root
             for path in rb.iter_source_files(root, list(ctx.ignore)):
@@ -60,14 +63,28 @@ class SidekiqLinker:
                 rel = (repo, path.relative_to(root).as_posix())
                 for k in rb.classes(tree):
                     if _is_job(k):
-                        jobs.setdefault(k.short, []).append((rel, k))
+                        jobs.setdefault(k.name, []).append((rel, k))
+                        short.setdefault(k.short, set()).add(k.name)
                 for c in rb.calls(tree):
                     if (name := _job_name(c)):
-                        calls.append((rel, name, c.line))
+                        calls.append((rel, name, rb.nesting(c.node), c.line))
+
+        def resolve(written: str, scopes: list[str]) -> str | None:
+            """Ruby's lookup: `SyncJob` inside `module Crm` is `Crm::SyncJob` when that exists, else `SyncJob`;
+            a bare name defined once anywhere is that class."""
+            for s in scopes + [""]:
+                full = f"{s}::{written}" if s else written
+                if full in jobs:
+                    return full
+            cands = short.get(written.rsplit("::", 1)[-1], set())
+            cands = {f for f in cands if f.endswith(written)} if "::" in written else cands
+            return next(iter(cands)) if len(cands) == 1 else None
+
         edges: list[CodeEdge] = []
         topics: dict[str, str] = {}
         done: set[tuple[str, str]] = set()
-        for rel, name, line in calls:
+        for rel, written, scopes, line in calls:
+            name = resolve(written, scopes) or written
             defs = jobs.get(name, [])
             mine = [d for d in defs if d[0][0] == rel[0]] or defs
             if name not in topics:
