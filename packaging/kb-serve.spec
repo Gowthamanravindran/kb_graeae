@@ -1,8 +1,15 @@
 # PyInstaller spec for the packaged KB engine (one-folder). Build: bash packaging/build-sidecar.sh
+import importlib.metadata
+
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
+# Graphify loads each language's parser by name at run time (`tree_sitter_ruby`, `tree_sitter_python`, …), which
+# PyInstaller can't see, so every installed tree-sitter grammar is bundled explicitly.
+grammars = sorted({d.metadata["Name"].replace("-", "_") for d in importlib.metadata.distributions()
+                   if d.metadata["Name"] and d.metadata["Name"].lower().startswith("tree-sitter-")})
+
 datas, binaries, hiddenimports = [], [], []
-for pkg in ("tree_sitter_typescript", "graphify", "langgraph", "langchain_core", "claude_agent_sdk", "langfuse",
+for pkg in (*grammars, "graphify", "langgraph", "langchain_core", "claude_agent_sdk", "langfuse",
             "tiktoken", "networkx", "graphql"):
     try:
         d, b, h = collect_all(pkg)

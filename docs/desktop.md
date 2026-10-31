@@ -181,8 +181,21 @@ The builds are **unsigned** for now.
 - **macOS, first launch:** right-click the app in Applications → **Open** → **Open**. After that it opens normally. If macOS says the app "is damaged", run `xattr -dr com.apple.quarantine "/Applications/KB Desktop.app"`.
 - **Windows:** SmartScreen → **More info** → **Run anyway**.
 
-Claude Code must be installed and signed in on the machine (`claude` once) to ask new questions.
-Without it the app still opens, browses maps and reads saved answers, and the Ask view explains what is missing.
+### Sharing the app: what the other person needs
+
+The app carries its own engine (Python, Graphify, every tree-sitter language parser and all packages), so the
+person you share the dmg with does **not** need Python, uv, `uv sync`, Node or this repo. They need:
+
+- **The right dmg for their Mac:** `arm64` for Apple silicon (M1 and later), `x64` for Intel.
+- **Claude Code**, installed and signed in (run `claude` once in Terminal). It writes the module map when a branch
+  is analysed, answers questions and writes test cases. Without it the app still opens, browses maps and reads
+  saved or team answers (pulled from the registry), and the Ask view explains what is missing.
+- **git** (`git --version` in Terminal; macOS offers to install the Command Line Tools if it's missing), and
+  access to the repos: Add project and PR test plans clone and check out with their own git sign-in.
+- Optional: the **registry** URL and a token, to share analyses and test plans with the team; **Langfuse** keys for
+  tracing.
+
+Everything they create lives in `~/.kb` on their machine.
 Langfuse is optional. Enter the keys in **Settings** (they are saved to `~/.kb/kb.env`), or put `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_HOST` in that file yourself
 (see `docs/langfuse-local.md`). That gives "Open trace in Langfuse" and thumbs feedback, even when the app is opened from Finder.
 
