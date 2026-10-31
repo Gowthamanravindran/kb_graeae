@@ -1,4 +1,4 @@
-# PyInstaller spec for the packaged KB engine (one-folder). Build: bash packaging/build-sidecar.sh
+# PyInstaller spec for the packaged Graeae engine (one-folder). Build: bash packaging/build-sidecar.sh
 import importlib.metadata
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules

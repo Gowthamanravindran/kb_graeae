@@ -13,8 +13,8 @@ export function Sidebar() {
   return (
     <nav aria-label="Main" className="flex w-[240px] shrink-0 flex-col gap-6 border-r border-line bg-surface px-4 py-5">
       <div className="flex items-center gap-2.5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-ink text-[13px] font-bold text-white">kb</div>
-        <div className="text-[15px] font-semibold">KB Desktop</div>
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-ink text-[13px] font-bold text-white" aria-hidden="true">G</div>
+        <div className="text-[15px] font-semibold">Graeae</div>
       </div>
       <ProjectSwitcher />
       <div className="flex flex-col gap-1">

@@ -1,5 +1,5 @@
-appId: ai.kb.desktop
-productName: KB Desktop
+appId: ai.graeae.desktop
+productName: Graeae
 directories:
   output: release
 asar: true

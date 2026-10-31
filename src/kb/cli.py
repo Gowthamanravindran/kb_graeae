@@ -324,7 +324,7 @@ def serve(
     exit_on_stdin_eof: bool = typer.Option(False, "--exit-on-stdin-eof",
                                            help="Stop when stdin closes (the desktop app holds it open)"),
 ) -> None:
-    """Run the local API for KB Desktop (127.0.0.1 only; needs KB_SERVE_TOKEN)."""
+    """Run the local API for the Graeae desktop app (127.0.0.1 only; needs KB_SERVE_TOKEN)."""
     import json
     import os
     import sys

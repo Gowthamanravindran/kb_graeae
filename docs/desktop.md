@@ -1,4 +1,4 @@
-# KB Desktop
+# Graeae
 
 The desktop app is an Electron window around the same engine the CLI uses. On start it launches
 `kb serve` (the "engine") on a random local port with a one-time token. The engine serves both
@@ -172,9 +172,9 @@ npm --prefix desktop run dist            # app for the current OS → desktop/re
 
 | OS | Output | Notes |
 |---|---|---|
-| macOS | `KB Desktop-<v>-arm64.dmg`, `…-x64.dmg` | build on a Mac, once per architecture you need: the engine is native to the machine that built it |
+| macOS | `Graeae-<v>-arm64.dmg`, `…-x64.dmg` | build on a Mac, once per architecture you need: the engine is native to the machine that built it |
 | Windows | NSIS installer | build on Windows |
-| Linux | `KB Desktop-<v>.AppImage` | `npm --prefix desktop run dist -- --linux AppImage` |
+| Linux | `Graeae-<v>.AppImage` | `npm --prefix desktop run dist -- --linux AppImage` |
 
 ### Signing and notarizing for macOS
 
@@ -203,8 +203,8 @@ Hardened Runtime entitlements), sends it to Apple, waits for notarization (usual
 ticket. Check the result before sharing:
 
 ```bash
-spctl -a -vvv -t exec "desktop/release/mac-arm64/KB Desktop.app"   # expect: accepted, source=Notarized Developer ID
-xcrun stapler validate "desktop/release/mac-arm64/KB Desktop.app"
+spctl -a -vvv -t exec "desktop/release/mac-arm64/Graeae.app"   # expect: accepted, source=Notarized Developer ID
+xcrun stapler validate "desktop/release/mac-arm64/Graeae.app"
 ```
 
 Then open the dmg on a second Mac (or a new user account) and run a branch analysis once, which exercises the
@@ -215,12 +215,12 @@ and `APPLE_TEAM_ID` also work. In CI, put the certificate in `CSC_LINK` (base64 
 
 Without signing, macOS (15 Sequoia and later) blocks the app the first time, and right-click → **Open** no
 longer works around it. The person installing it:
-1. Drags **KB Desktop** to Applications and double-clicks it. macOS says it can't verify the app: click **Done**.
-2. Opens **System Settings → Privacy & Security**, scrolls down to *"KB Desktop" was blocked…* and clicks
+1. Drags **Graeae** to Applications and double-clicks it. macOS says it can't verify the app: click **Done**.
+2. Opens **System Settings → Privacy & Security**, scrolls down to *"Graeae" was blocked…* and clicks
    **Open Anyway**, then confirms with their password.
 
 If macOS instead says the app "is damaged and can't be opened", run in Terminal:
-`xattr -dr com.apple.quarantine "/Applications/KB Desktop.app"`.
+`xattr -dr com.apple.quarantine "/Applications/Graeae.app"`.
 
 - **Windows:** SmartScreen → **More info** → **Run anyway**.
 
@@ -242,7 +242,7 @@ Everything they create lives in `~/.kb` on their machine.
 Langfuse is optional. Enter the keys in **Settings** (they are saved to `~/.kb/kb.env`), or put `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_HOST` in that file yourself
 (see `docs/langfuse-local.md`). That gives "Open trace in Langfuse" and thumbs feedback, even when the app is opened from Finder.
 
-If the engine fails to start, the app shows **KB engine didn't start** with the last lines of the log,
+If the engine fails to start, the app shows **Graeae engine didn't start** with the last lines of the log,
 a **Retry** button, and **Open logs** (`$KB_HOME/logs/`).
 
 ## Mac acceptance checklist (to do on your Mac)
@@ -259,7 +259,7 @@ a **Retry** button, and **Open logs** (`$KB_HOME/logs/`).
    - **Push to registry**, then **Share to sop@main** on the answer;
    - Memory shows the answer as Published.
 9. Second profile: quit the app, then start it with another home, for example
-   `KB_HOME=~/.kb-second open -a "KB Desktop"`.
+   `KB_HOME=~/.kb-second open -a "Graeae"`.
    - Sign in as the viewer, **Pull** `main`, and ask the same question.
    - Expect "Reused a saved answer — no Claude call".
 10. Quit the app, then confirm no engine is left running: `pgrep -f kb-serve` prints nothing.

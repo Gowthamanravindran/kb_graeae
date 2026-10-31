@@ -34,14 +34,14 @@ export function editorUrl(filePath: string, line: number): string {
 }
 
 export async function openCitation(engine: { port: number; token: string } | null, c: CitationRef, d: OpenDeps): Promise<{ ok: boolean; error?: string; revealed?: boolean }> {
-  if (!engine) return { ok: false, error: "The KB engine is not running." };
+  if (!engine) return { ok: false, error: "The Graeae engine is not running." };
   const q = new URLSearchParams({ repo: c.repo, file: c.file, line: String(c.line || 1) });
   const url = `http://127.0.0.1:${engine.port}/api/projects/${encodeURIComponent(c.project)}/branches/${seg(c.branch)}/citation?${q}`;
   let res: Response;
   try {
     res = await d.fetch(url, { headers: { "X-KB-Token": engine.token } });
   } catch (e) {
-    return { ok: false, error: `Could not reach the KB engine: ${(e as Error).message}` };
+    return { ok: false, error: `Could not reach the Graeae engine: ${(e as Error).message}` };
   }
   const body = (await res.json().catch(() => ({}))) as { path?: string; line?: number; detail?: string };
   if (!res.ok || typeof body.path !== "string") return { ok: false, error: body.detail ?? `The engine refused (${res.status}).` };

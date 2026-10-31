@@ -29,6 +29,8 @@ export async function launch(env: Record<string, string>): Promise<{ app: Electr
       ...process.env,
       PYTHONPATH: [path.join(repo, "tests/e2e_support"), path.join(repo, "tests"), path.join(repo, "tests/testplan")].join(":"),
       KB_SERVE_PROVIDER: "e2e_fakes:make_provider",
+      // remembered screens etc. stay with this test's home, so one test can't reopen another's plan
+      ...(env.KB_HOME ? { KB_USER_DATA: path.join(env.KB_HOME, ".electron-user-data") } : {}),
       ...env,
     } as Record<string, string>,
   });

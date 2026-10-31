@@ -93,8 +93,12 @@ export function PlanBoard() {
       } else if (current?.registry) {
         try { setPeople(await api.testplanPeople(project, planId)); } catch { /* not reachable: the registry answers a Share itself */ }
       }
-    } catch (e) { setError(msg(e)); }
-  }, [api, project, planId, current?.registry]);
+    } catch (e) {
+      // the plan was deleted (or this app reopened on one from another project): show the plans list instead
+      if (e instanceof ApiError && e.status === 404) set({ planId: null, planScreen: "list" });
+      else setError(msg(e));
+    }
+  }, [api, project, planId, current?.registry, set]);
   useEffect(() => { void load(); }, [load]);
   if (error && !d) return <div role="alert" className="rounded-lg bg-warn-soft px-4 py-3 text-sm text-warn">{error}</div>;
   if (!d) return <p className="text-muted">Loading the plan…</p>;

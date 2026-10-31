@@ -16,7 +16,7 @@ test("app_starts_and_shows_library", async () => {
 test("sidecar_failure_shows_error_screen", async () => {
   const { home } = makeHome();
   const { app, page } = await launch({ KB_HOME: home, KB_SERVE_CMD: "false" });
-  await expect(page.getByRole("heading", { name: "KB engine didn't start" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("heading", { name: "Graeae engine didn't start" })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
   await app.close();
 });
@@ -47,7 +47,7 @@ test("engine_dying_later_shows_error_screen", async () => {
   } catch {
     /* pkill exits 1 if nothing matched; the expectation below then fails */
   }
-  await expect(page.getByRole("heading", { name: "KB engine stopped" })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole("heading", { name: "Graeae engine stopped" })).toBeVisible({ timeout: 20_000 });
   await page.getByRole("button", { name: "Retry" }).click();
   await expect(page.getByRole("heading", { name: "Library" })).toBeVisible({ timeout: 60_000 });
   await app.close();

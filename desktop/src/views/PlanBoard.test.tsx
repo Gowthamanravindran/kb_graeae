@@ -182,3 +182,15 @@ test("shared_viewer_cannot_reserve_and_contributor_cannot_assign", async () => {
   expect(await screen.findByRole("button", { name: "Generate more" })).toBeInTheDocument();
   expect(screen.queryByLabelText(/^Assign /)).not.toBeInTheDocument();
 });
+
+function PlanProbe() {
+  const { planId, planScreen } = useApp();
+  return <output data-testid="plan-probe">{planId ?? "none"}|{planScreen}</output>;
+}
+
+test("a_plan_that_no_longer_exists_falls_back_to_the_plans_list", async () => {
+  const api = fakeApi({ testplan: vi.fn(async () => { throw new ApiError(404, "no test plan cs1"); }) });
+  renderApp(<><PlanBoard /><PlanProbe /></>, api, { project: "sop", branch: "main", view: "testplans", askSeed: null, planId: "cs1", planScreen: "board" });
+  await waitFor(() => expect(screen.getByTestId("plan-probe")).toHaveTextContent("none|list"));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});

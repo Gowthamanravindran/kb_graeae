@@ -27,7 +27,7 @@ export function useJob<T = unknown>(api: Api, jobId: string | null, intervalMs =
         const gone = (e as { status?: number }).status === 404;
         if (gone || ++misses >= MAX_MISSES) {
           setJob({ id: jobId, kind: "", key: null, state: "failed", step: "", progress: 0, result: null, created_at: "",
-            error: gone ? "This job is gone (the KB engine restarted). Run it again." : "Lost contact with the KB engine. Restart the app if this keeps happening." });
+            error: gone ? "This job is gone (the Graeae engine restarted). Run it again." : "Lost contact with the Graeae engine. Restart the app if this keeps happening." });
           return;
         }
       }
