@@ -20,7 +20,7 @@ def create_app(settings: Settings, store: BlobStore | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.sessionmaker = make_sessionmaker(make_engine(settings.database_url))
     app.state.store = store or make_store(settings)
-    for name in ("projects", "blobs", "packs"):
+    for name in ("projects", "blobs", "packs", "testplans"):
         modname = f"kb_registry.api.{name}"
         if importlib.util.find_spec(modname) is None:
             continue

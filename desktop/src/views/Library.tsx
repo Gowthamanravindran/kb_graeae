@@ -8,6 +8,8 @@ import { Card } from "../components/ui/card";
 import { Checkbox } from "../components/ui/checkbox";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
+import { Spinner } from "../components/ui/spinner";
+import { AddProjectDialog } from "../components/AddProjectDialog";
 import { LoginDialog } from "../components/LoginDialog";
 import { hostOf } from "../lib";
 import { useApp } from "../state";
@@ -29,19 +31,57 @@ function ago(iso: string | null): string {
   return `${Math.floor(d / 7)} weeks ago`;
 }
 
-function Progress({ jobId, onDone }: { jobId: string; onDone(): void }) {
+type Running = { id: string; kind: string }; // id "" = asked for, the engine hasn't answered yet
+const VERB: Record<string, string> = { analyze: "Analysing", pull: "Pulling", push: "Sharing", delete: "Deleting" };
+const RUN_KEY = /^(analyze|pull|push):(.+?)@(.+)$/;
+
+function minutes(iso: string | undefined): string {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (Number.isNaN(t)) return "";
+  const m = Math.floor((Date.now() - t) / 60_000);
+  return m < 1 ? "under a minute" : `${m} min`;
+}
+
+function Bar({ pct, wide }: { pct: number; wide?: boolean }) {
+  return (
+    <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}
+      className={`${wide ? "h-2.5 w-full" : "h-2 max-w-[260px]"} overflow-hidden rounded bg-priv-soft`}>
+      {/* early steps (cloning, checking out) report little progress: pulse so it never looks stuck */}
+      <div className={`h-full bg-accent transition-[width] ${pct < 10 ? "animate-pulse" : ""}`} style={{ width: `${Math.max(pct, 8)}%` }} />
+    </div>
+  );
+}
+
+/** The progress card at the top of the Library: owns the job, and reports when it ends. */
+function RunningCard({ branch, run, onDone }: { branch: string; run: Running; onDone(error: string | null): void }) {
   const { api } = useApp();
-  const { job, done, failed } = useJob(api, jobId);
+  const { job, done, failed } = useJob(api, run.id || null);
   useEffect(() => {
-    if (done || failed) onDone();
+    if (done || failed) onDone(failed ? job?.error ?? "The job failed." : null);
   }, [done, failed]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (failed) return <p className="text-xs text-warn">{job?.error}</p>;
+  const pct = Math.round((job?.progress ?? 0) * 100);
+  const label = `${VERB[run.kind] ?? "Working on"} ${branch}`;
+  const since = minutes(job?.created_at);
+  return (
+    <section aria-label={label} className="flex flex-col gap-2.5 rounded-xl border border-accent/30 bg-accent-soft/60 px-5 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5 font-semibold"><Spinner />{label}</div>
+        <div className="text-xs text-muted">{pct}%{since ? ` · ${since}` : ""}</div>
+      </div>
+      <Bar pct={pct} wide />
+      <div className="text-sm text-muted">{job?.step || "Starting…"}</div>
+      {run.kind === "analyze" && <div className="text-xs text-muted">Larger codebases take up to an hour. You can keep using the app; this keeps going.</div>}
+    </section>
+  );
+}
+
+function RowProgress({ jobId }: { jobId: string }) {
+  const { api } = useApp();
+  const { job } = useJob(api, jobId || null);
   return (
     <div>
-      <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((job?.progress ?? 0) * 100)} className="h-2 max-w-[260px] overflow-hidden rounded bg-priv-soft">
-        <div className="h-2 bg-accent" style={{ width: `${Math.round((job?.progress ?? 0.05) * 100)}%` }} />
-      </div>
-      <div className="mt-1.5 text-xs text-muted">{job?.step || "Starting…"}</div>
+      <Bar pct={Math.round((job?.progress ?? 0) * 100)} />
+      <div className="mt-1.5 flex items-center gap-2 text-xs text-muted"><Spinner /><span>{job?.step || "Starting…"}</span></div>
     </div>
   );
 }
@@ -56,7 +96,17 @@ function AnalyseDialog({ open, onOpenChange, onStart, repos }: {
   const [label, setLabel] = useState("");
   const [map, setMap] = useState<Record<string, string>>({});
   useEffect(() => {
-    if (open) setMap(Object.fromEntries(repos.map((r) => [r.name, r.default_branch ?? ""])));
+    if (!open) return;
+    setMap(Object.fromEntries(repos.map((r) => [r.name, r.default_branch ?? ""])));
+    // start from the production branches in kb.yaml: one shared branch, or one per repo named "production"
+    const defaults = repos.map((r) => r.default_branch ?? "").filter(Boolean);
+    const distinct = new Set(defaults);
+    if (repos.length && defaults.length === repos.length && distinct.size > 1) {
+      setPerRepo(true);
+      setLabel((l) => l || "production");
+    } else if (distinct.size === 1) {
+      setBranch((b) => b || [...distinct][0]);
+    }
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
   const ready = perRepo ? !!label.trim() && repos.every((r) => (map[r.name] ?? "").trim()) : !!branch.trim();
   const submit = () => {
@@ -105,15 +155,64 @@ function AnalyseDialog({ open, onOpenChange, onStart, repos }: {
   );
 }
 
+type Redo = { kind: "reanalyse" | "fresh" | "delete"; row: BranchRow };
+
+function RedoDialog({ redo, onClose, onConfirm }: { redo: Redo | null; onClose(): void; onConfirm(r: Redo): void }) {
+  if (!redo) return null;
+  const { kind, row } = redo;
+  const lo = row.local;
+  const answers = lo?.qa_total ?? 0, plans = lo?.testplans ?? 0;
+  const lost = [answers ? `${answers} saved answer${answers === 1 ? "" : "s"}` : "", plans ? `${plans} test plan${plans === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ");
+  const title = kind === "delete" ? `Delete ${row.branch}?` : kind === "fresh" ? `Start ${row.branch} from scratch?` : `Re-analyse ${row.branch}?`;
+  const action = kind === "delete" ? "Delete" : kind === "fresh" ? "Delete and analyse again" : "Re-analyse";
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogTitle>{title}</DialogTitle>
+        <div className="mb-4 flex flex-col gap-2 text-sm text-muted">
+          {kind === "reanalyse" && <p>Rebuilds the map and modules from the current code. It keeps the {answers} saved answer{answers === 1 ? "" : "s"}{plans ? ` and ${plans} test plan${plans === 1 ? "" : "s"}` : ""}; answers whose code changed are marked stale. Naming modules uses Claude.</p>}
+          {kind === "fresh" && <p>Deletes this analysis{lost ? `, including ${lost},` : ""} then analyses the same branches again from nothing. Naming modules uses Claude.</p>}
+          {kind === "delete" && <p>Removes the map{lost ? `, ${lost}` : ""} from this computer. This can't be undone.</p>}
+          {kind !== "reanalyse" && row.remote && <p>The copy shared to the registry stays in the registry; you can pull it again.</p>}
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant={kind === "reanalyse" ? "primary" : "danger"} onClick={() => onConfirm(redo)}>{action}</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RowMenu({ row, onPick }: { row: BranchRow; onPick(kind: Redo["kind"]): void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <Button variant="ghost" size="sm" aria-label={`More actions for ${row.branch}`} aria-expanded={open} onClick={() => setOpen((o) => !o)}>⋯</Button>
+      {open && (
+        <div role="menu" className="absolute right-0 z-20 mt-1 w-44 rounded-lg border border-line bg-surface p-1 text-left shadow-lg" onMouseLeave={() => setOpen(false)}>
+          {([["reanalyse", "Re-analyse"], ["fresh", "Start fresh…"], ["delete", "Delete…"]] as const).map(([k, label]) => (
+            <button key={k} type="button" role="menuitem" onClick={() => { setOpen(false); onPick(k); }}
+              className={`block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-bg ${k === "delete" ? "text-warn" : ""}`}>{label}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Library() {
   const { api, current, project, go, set } = useApp();
   const [data, setData] = useState<BranchesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [jobs, setJobs] = useState<Record<string, string>>({});
+  const [jobs, setJobs] = useState<Record<string, Running>>({}); // started from this screen
+  const [serverJobs, setServerJobs] = useState<Record<string, Running>>({}); // running anywhere (other screens, CLI)
   const [analysing, setAnalysing] = useState(false);
   const [login, setLogin] = useState(false);
   const [dismissed, setDismissed] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [redo, setRedo] = useState<Redo | null>(null);
   const load = useCallback(async () => {
     if (!project) return;
     try {
@@ -124,21 +223,60 @@ export function Library() {
     }
   }, [api, project]);
   useEffect(() => { void load(); }, [load]);
-  const start = async (branch: string, fn: () => Promise<{ job_id: string }>) => {
+  // The jobs list answers in milliseconds (the branch list can take seconds on a big project), so it is what
+  // shows running work at once and keeps watching for work started elsewhere.
+  const poll = useCallback(async () => {
+    if (!project) return;
+    try {
+      const running: Record<string, Running> = {};
+      for (const j of await api.jobs({ active: true })) {
+        const m = j.key ? RUN_KEY.exec(j.key) : null;
+        if (m && m[2] === project) running[m[3]] = { id: j.id, kind: j.kind };
+      }
+      setServerJobs((prev) => {
+        if (Object.keys(prev).some((b) => !running[b])) void load(); // something finished: refresh the rows
+        return running;
+      });
+    } catch {
+      /* the next poll tries again */
+    }
+  }, [api, project, load]);
+  useEffect(() => {
+    void poll();
+    const t = setInterval(() => void poll(), 3000);
+    return () => clearInterval(t);
+  }, [poll]);
+  const start = async (branch: string, kind: string, fn: () => Promise<{ job_id: string }>) => {
+    setJobs((j) => ({ ...j, [branch]: { id: "", kind } })); // shown the moment it's asked for
+    setFailure(null);
     try {
       const { job_id } = await fn();
-      setJobs((j) => ({ ...j, [branch]: job_id }));
+      setJobs((j) => ({ ...j, [branch]: { id: job_id, kind } }));
+      void load();
     } catch (e) {
+      setJobs((j) => { const n = { ...j }; delete n[branch]; return n; });
       if (e instanceof ApiError && e.status === 401) setLogin(true);
       setError(e instanceof ApiError ? e.detail : String(e));
     }
   };
-  const finished = (branch: string) => {
+  const finished = (branch: string, failure: string | null) => {
     setJobs((j) => { const n = { ...j }; delete n[branch]; return n; });
+    setServerJobs((j) => { const n = { ...j }; delete n[branch]; return n; });
+    if (failure) setFailure(`${branch}: ${failure}`); // the row goes away with the job, so say it up top
     void load();
   };
+  const confirmRedo = ({ kind, row }: Redo) => {
+    setRedo(null);
+    if (kind === "delete") void start(row.branch, "delete", () => api.deleteBranch(project!, row.branch));
+    else void start(row.branch, "analyze", () => api.analyze(project!, row.branch, false, undefined, kind === "fresh"));
+  };
   if (!project) return <Empty />;
-  const rows = (data?.rows ?? []).filter((r) => r.branch.toLowerCase().includes(query.toLowerCase()));
+  const known = new Set((data?.rows ?? []).map((r) => r.branch));
+  const running: Record<string, Running> = { ...serverJobs, ...jobs };
+  for (const r of data?.rows ?? []) if (r.state === "in-progress" && r.job_id && !running[r.branch]) running[r.branch] = { id: r.job_id, kind: "analyze" };
+  const pending: BranchRow[] = Object.entries(running).filter(([b]) => !known.has(b))
+    .map(([b, run]) => ({ branch: b, local: null, remote: null, state: "in-progress", job_id: run.id }));
+  const rows = [...pending, ...(data?.rows ?? [])].filter((r) => r.branch.toLowerCase().includes(query.toLowerCase()));
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -152,6 +290,15 @@ export function Library() {
           <Button onClick={() => setAnalysing(true)}>Analyse a branch</Button>
         </div>
       </div>
+      {Object.entries(running).map(([b, run]) => (
+        <RunningCard key={b} branch={b} run={run} onDone={(failure) => finished(b, failure)} />
+      ))}
+      {failure && (
+        <div role="alert" className="flex items-start justify-between gap-4 rounded-lg bg-warn-soft px-4 py-3 text-sm text-warn">
+          <span>{failure}</span>
+          <button type="button" aria-label="Dismiss" className="font-semibold" onClick={() => setFailure(null)}>×</button>
+        </div>
+      )}
       {(error ?? data?.registry_error) && dismissed !== (error ?? data?.registry_error) && (
         <div role="alert" className="flex items-start justify-between gap-4 rounded-lg bg-warn-soft px-4 py-3 text-sm text-warn">
           <span>{error ?? data?.registry_error}</span>
@@ -183,8 +330,9 @@ export function Library() {
             {rows.map((r) => {
               const lo = r.local;
               const commits = lo?.commits ?? r.remote?.commits ?? {};
-              const jobId = jobs[r.branch] ?? (r.state === "in-progress" ? r.job_id : null);
-              const badge = jobId ? BADGE["in-progress"] : BADGE[r.state];
+              const jobId = running[r.branch] ? running[r.branch].id : null;
+              const busy = jobId !== null;
+              const badge = busy ? BADGE["in-progress"] : BADGE[r.state];
               return (
                 <tr key={r.branch} className="border-b border-[#EFEFEC] last:border-0">
                   <td className="px-6 py-4">
@@ -195,8 +343,8 @@ export function Library() {
                     )}
                   </td>
                   <td className="px-4 py-4 font-mono text-xs text-muted">{Object.entries(commits).map(([k, v]) => <div key={k}>{k} {v.slice(0, 12)}</div>)}</td>
-                  {jobId ? (
-                    <td className="px-4 py-4" colSpan={2}><Progress jobId={jobId} onDone={() => finished(r.branch)} /></td>
+                  {busy ? (
+                    <td className="px-4 py-4" colSpan={2}><RowProgress jobId={jobId} /></td>
                   ) : (
                     <>
                       <td className="px-4 py-4 text-[13px]">
@@ -211,19 +359,20 @@ export function Library() {
                   <td className="px-4 py-4"><Badge tone={badge.tone}>{badge.text}</Badge></td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex justify-end gap-2">
-                      {jobId ? null : r.state === "synced" || r.state === "update-available" ? (
+                      {busy ? null : r.state === "synced" || r.state === "update-available" ? (
                         <>
-                          {r.state === "update-available" && <Button variant="secondary" size="sm" onClick={() => void start(r.branch, () => api.pull(project, r.branch, false))}>Pull</Button>}
+                          {r.state === "update-available" && <Button variant="secondary" size="sm" onClick={() => void start(r.branch, "pull", () => api.pull(project, r.branch, false))}>Pull</Button>}
                           <Button variant="secondary" size="sm" onClick={() => go("map", { branch: r.branch })}>Open</Button>
                         </>
                       ) : r.state === "not-pulled" ? (
-                        <Button variant="secondary" size="sm" onClick={() => void start(r.branch, () => api.pull(project, r.branch, false))}>Pull</Button>
+                        <Button variant="secondary" size="sm" onClick={() => void start(r.branch, "pull", () => api.pull(project, r.branch, false))}>Pull</Button>
                       ) : r.state === "local-only" ? (
                         <>
-                          {current?.registry && <Button size="sm" onClick={() => void start(r.branch, () => api.push(project, r.branch))}>Push to registry</Button>}
+                          {current?.registry && <Button size="sm" onClick={() => void start(r.branch, "push", () => api.push(project, r.branch))}>Push to registry</Button>}
                           <Button variant="secondary" size="sm" onClick={() => go("map", { branch: r.branch })}>Open</Button>
                         </>
                       ) : null}
+                      {!busy && lo && <RowMenu row={r} onPick={(kind) => setRedo({ kind, row: r })} />}
                     </div>
                   </td>
                 </tr>
@@ -236,17 +385,21 @@ export function Library() {
         </table>
       </Card>
       <AnalyseDialog open={analysing} onOpenChange={setAnalysing} repos={current?.repos ?? []}
-        onStart={(b, resume, branches) => { set({ branch: b }); void start(b, () => (branches ? api.analyze(project, b, resume, branches) : api.analyze(project, b, resume))); }} />
+        onStart={(b, resume, branches) => { set({ branch: b }); void start(b, "analyze", () => (branches ? api.analyze(project, b, resume, branches) : api.analyze(project, b, resume))); }} />
       <LoginDialog open={login} onOpenChange={setLogin} />
+      <RedoDialog redo={redo} onClose={() => setRedo(null)} onConfirm={confirmRedo} />
     </div>
   );
 }
 
 function Empty() {
+  const [adding, setAdding] = useState(false);
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col items-start gap-3">
       <h1 className="text-[26px] font-bold">Library</h1>
-      <p className="text-muted">Add a project to get started: open the project menu in the sidebar and choose “Add a project…”.</p>
+      <p className="text-muted">Add a project to get started: give KB the GitHub links or folders of its repos.</p>
+      <Button onClick={() => setAdding(true)}>Add a project</Button>
+      <AddProjectDialog open={adding} onOpenChange={setAdding} />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import type { SettingKey, SettingsView, PlanSummary, TestPlanDetail, Priority, AskPayload, BranchesResponse, Job, MapView, MemoryView, ProjectRow, RegistryStatus, SavedQA, Status } from "./types";
+import type { Connections, NewProjectBody, SharedPlanRow, TeamPeople, SettingKey, SettingsView, PlanSummary, TestPlanDetail, Priority, AskPayload, BranchesResponse, Job, MapView, MemoryView, ProjectRow, RegistryStatus, SavedQA, Status } from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, public detail: string) {
@@ -27,6 +27,8 @@ export function createClient({ baseUrl, token }: { baseUrl: string; token: strin
     status: (fresh = false) => call<Status>("GET", fresh ? "/api/status?fresh=1" : "/api/status"),
     projects: () => call<ProjectRow[]>("GET", "/api/projects"),
     addProject: (configPath: string) => call<ProjectRow>("POST", "/api/projects", { config_path: configPath }),
+    inspectProject: (sources: string[]) => call<JobRef>("POST", "/api/projects/inspect", { sources }),
+    createProject: (body: NewProjectBody) => call<ProjectRow>("POST", "/api/projects/create", body),
     registry: (p: string) => call<RegistryStatus>("GET", `/api/projects/${encodeURIComponent(p)}/registry`),
     login: (registry: string, token: string) => call<{ email: string }>("POST", "/api/login", { registry, token }),
     logout: (registry: string) => call<{ forgotten: boolean }>("POST", "/api/logout", { registry }),
@@ -43,6 +45,15 @@ export function createClient({ baseUrl, token }: { baseUrl: string; token: strin
       call<JobRef>("POST", `${tp(p, id)}/generate`, flowIds ? { counts, per_flow_cap: perFlowCap, flow_ids: flowIds } : { counts, per_flow_cap: perFlowCap }),
     acceptExtra: (p: string, id: string, caseId: string) => call<{ ok: boolean }>("POST", `${tp(p, id)}/extras/${encodeURIComponent(caseId)}/accept`),
     dismissExtra: (p: string, id: string, caseId: string) => call<{ ok: boolean }>("POST", `${tp(p, id)}/extras/${encodeURIComponent(caseId)}/dismiss`),
+    shareTestplan: (p: string, id: string) => call<JobRef>("POST", `${tp(p, id)}/share`),
+    syncTestplan: (p: string, id: string) => call<JobRef>("POST", `${tp(p, id)}/sync`),
+    testplanPeople: (p: string, id: string) => call<TeamPeople>("GET", `${tp(p, id)}/people`),
+    assignTestplan: (p: string, id: string, body: { flow_ids?: string[]; slot_ids?: string[]; email: string | null }) =>
+      call<{ assigned: string[] }>("POST", `${tp(p, id)}/assign`, body),
+    releaseTestplan: (p: string, id: string, body: { slot_ids: string[] }) => call<{ released: string[] }>("POST", `${tp(p, id)}/release`, body),
+    sharedTestplans: (p: string) => call<SharedPlanRow[]>("GET", `/api/projects/${encodeURIComponent(p)}/testplans/shared`),
+    pullTestplan: (p: string, label: string, id: string) =>
+      call<JobRef>("POST", `/api/projects/${encodeURIComponent(p)}/testplans/shared/${encodeURIComponent(label)}/${encodeURIComponent(id)}/pull`),
     retrySlot: (p: string, id: string, slotId: string) => call<JobRef>("POST", `${tp(p, id)}/slots/${encodeURIComponent(slotId)}/retry`),
     exportCsv: async (p: string, id: string, filters: { priority?: string[]; flow?: string[]; status?: string[] } = {}) => {
       const q = new URLSearchParams();
@@ -54,13 +65,15 @@ export function createClient({ baseUrl, token }: { baseUrl: string; token: strin
     saveSettings: (values: Partial<Record<SettingKey, string | null>>) => call<SettingsView>("PUT", "/api/settings", { values }),
     loginSso: (registry: string) => call<JobRef>("POST", "/api/login/sso", { registry }),
     branches: (p: string) => call<BranchesResponse>("GET", `/api/projects/${encodeURIComponent(p)}/branches`),
-    analyze: (p: string, br: string, resume = false, branches?: Record<string, string>) =>
-      call<JobRef>("POST", `${b(p, br)}/analyze`, branches ? { resume, branches } : { resume }),
+    analyze: (p: string, br: string, resume = false, branches?: Record<string, string>, fresh = false) =>
+      call<JobRef>("POST", `${b(p, br)}/analyze`, { resume, ...(branches ? { branches } : {}), ...(fresh ? { fresh } : {}) }),
+    deleteBranch: (p: string, br: string) => call<JobRef>("DELETE", b(p, br)),
     ask: (p: string, br: string, o: { question: string; fromQa?: string | null; noReuse?: boolean }) =>
       call<JobRef>("POST", `${b(p, br)}/ask`, { question: o.question, from_qa: o.fromQa ?? null, no_reuse: o.noReuse ?? false }),
     push: (p: string, br: string) => call<JobRef>("POST", `${b(p, br)}/push`),
     pull: (p: string, br: string, force = false) => call<JobRef>("POST", `${b(p, br)}/pull`, { force }),
     map: (p: string, br: string) => call<MapView>("GET", `${b(p, br)}/map`),
+    connections: (p: string, br: string) => call<Connections>("GET", `${b(p, br)}/connections`),
     memory: (p: string, br: string) => call<MemoryView>("GET", `${b(p, br)}/memory`),
     qa: (p: string, br: string, id: string) => call<SavedQA>("GET", `${b(p, br)}/qa/${encodeURIComponent(id)}`),
     publish: (p: string, br: string, ids: string[], notes = false) =>

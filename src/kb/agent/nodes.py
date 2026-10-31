@@ -30,7 +30,7 @@ from kb.packs.staleness import hash_span, is_stale
 MAX_DEPTH = 4
 MAX_NODES = 40
 REUSE_OVERLAP = 0.6
-KIND_ORDER = ["route", "component", "graphql_op", "resolver", "queue_topic"]
+KIND_ORDER = ["route", "component", "graphql_op", "resolver", "http_route", "queue_topic", "message_topic"]
 
 SYSTEM = (
     "You explain how a software feature works, for people who may not read code. "

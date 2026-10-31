@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError } from "../api/client";
-import type { BranchRow, PlanSummary } from "../api/types";
+import type { BranchRow, PlanSummary, SharedPlanRow } from "../api/types";
 import { useJob } from "../api/useJob";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Input } from "../components/ui/input";
+import { Spinner } from "../components/ui/spinner";
 import { cn } from "../lib";
 import { useApp } from "../state";
 
@@ -31,7 +32,7 @@ function Progress({ jobId, onDone }: { jobId: string; onDone(result: Record<stri
       <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((job?.progress ?? 0) * 100)} className="h-2 overflow-hidden rounded bg-priv-soft">
         <div className="h-2 bg-accent" style={{ width: `${Math.max(5, Math.round((job?.progress ?? 0) * 100))}%` }} />
       </div>
-      <div className="text-xs text-muted">{job?.step || "Starting…"}</div>
+      <div className="flex items-center gap-2 text-xs text-muted"><Spinner />{job?.step || "Starting…"}</div>
     </div>
   );
 }
@@ -225,8 +226,28 @@ function PlanTable({ plans, kind, onOpen }: { plans: PlanSummary[]; kind: Tab; o
   );
 }
 
+function SharedPlans({ rows, onOpen }: { rows: SharedPlanRow[]; onOpen(r: SharedPlanRow): void }) {
+  const fresh = rows.filter((r) => !r.local);
+  if (!fresh.length) return null;
+  return (
+    <section aria-label="Shared with the team">
+      <Card className="flex flex-col gap-2 p-5">
+        <h2 className="font-semibold">Shared with the team</h2>
+        <p className="text-xs text-muted">Plans teammates shared. Opening one downloads it; cases you generate are reserved so nobody writes them twice.</p>
+        {fresh.map((r) => (
+          <div key={`${r.label}/${r.plan_id}`} className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-2">
+            <span><b>{r.title}</b> <span className="font-mono text-xs text-muted">{r.label} · {r.plan_id}</span></span>
+            <Button size="sm" variant="secondary" onClick={() => onOpen(r)}>Open</Button>
+          </div>
+        ))}
+      </Card>
+    </section>
+  );
+}
+
 export function TestPlans() {
-  const { api, project, set, go, planJobId } = useApp();
+  const { api, project, set, go, planJobId, current } = useApp();
+  const [shared, setShared] = useState<SharedPlanRow[]>([]);
   const [tab, setTab] = useState<Tab>("pr");
   const [plans, setPlans] = useState<PlanSummary[]>([]);
   const [rows, setRows] = useState<BranchRow[]>([]);
@@ -242,6 +263,10 @@ export function TestPlans() {
     }
   }, [api, project]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (!project || !current?.registry) return;
+    api.sharedTestplans(project).then((r) => setShared(r ?? []), () => setShared([]));  // registry unreachable: nothing to list
+  }, [api, project, current?.registry]);
   const byKind = useMemo(() => ({ pr: plans.filter((p) => p.kind === "pr"), scenario: plans.filter((p) => p.kind === "scenario") }), [plans]);
   if (!project) return <p className="text-muted">Add a project first.</p>;
   const started = (jobId: string) => set({ planJobId: jobId });
@@ -269,10 +294,14 @@ export function TestPlans() {
             if (err) { setError(err); return; }
             const id = String(result?.plan_id ?? "");
             void load();
-            if (id) go("testplans", { planId: id, planScreen: id.startsWith("sc-") ? "board" : "impact" });
+            // a pulled team plan opens on its board; a new PR plan on its impact
+            if (id) go("testplans", { planId: id, planScreen: id.startsWith("sc-") || result?.label ? "board" : "impact" });
           }} />
         </Card>
       ) : tab === "pr" ? <PrForm rows={rows} onStarted={started} /> : <ScenarioForm rows={rows} onStarted={started} />}
+      <SharedPlans rows={shared} onOpen={(r) => void (async () => {
+        try { set({ planJobId: (await api.pullTestplan(project, r.label, r.plan_id)).job_id }); } catch (e) { setError(msg(e)); }
+      })()} />
       <PlanTable plans={byKind[tab]} kind={tab} onOpen={(p) => go("testplans", { planId: p.id, planScreen: p.kind === "pr" && p.cases_written === 0 ? "impact" : "board" })} />
     </div>
   );

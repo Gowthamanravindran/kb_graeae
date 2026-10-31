@@ -150,3 +150,15 @@ def test_resolve_branch_set_single_and_per_repo(tmp_path):
         resolve_branch_set(cfg, ["nope=x"], label="l")
     with pytest.raises(ConfigError, match="no branch for sop-backend"):
         resolve_branch_set(cfg, ["sop-web=master"], label="l")
+
+
+def test_linker_lists_of_repos(tmp_path):
+    from kb.config import ProjectConfig
+
+    base = {"project": "p", "repos": [{"name": n, "role": "x", "local_path": str(tmp_path)} for n in ("a", "b", "c")]}
+    cfg = ProjectConfig.model_validate({**base, "linkers": [{"type": "graphql", "from": ["a", "b"], "to": "c"},
+                                                            {"type": "bull-queue", "in": ["b", "c"]}]})
+    assert cfg.linkers[0].froms() == ["a", "b"] and cfg.linkers[0].tos() == ["c"] and cfg.linkers[1].ins() == ["b", "c"]
+    import pytest
+    with pytest.raises(Exception, match="unknown repo 'z'"):
+        ProjectConfig.model_validate({**base, "linkers": [{"type": "graphql", "from": ["a", "z"], "to": "c"}]})

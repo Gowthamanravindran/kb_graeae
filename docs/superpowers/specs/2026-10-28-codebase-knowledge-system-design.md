@@ -45,7 +45,8 @@ Teams need to understand how a product works — e.g. *"How does scheduling work
 - Running any LLM on the registry server.
 - Real-time collaboration / chat between users.
 - Editing code; this system is read-only over repos.
-- Linker plugins beyond `graphql`, `bull-queue`, `react-router`.
+- Linker plugins beyond `graphql`, `bull-queue`, `react-router`, `rest`, `kafka`, `sqs`, `rabbitmq` (the last four
+  were added after v1; see docs/desktop.md).
 - Hosted multi-tenant registry (stage 4; design accommodates it).
 
 ---
@@ -164,6 +165,8 @@ Packs contain paths, symbol names, line numbers, summaries and diagrams — neve
 - **`graphql`** — frontend operations (`gql` tags, `.graphql` files) ↔ backend resolver fields, matched by field name. e.g. `mutation AddTask` in `sop-web/.../create-task/task.graphql.ts` → `addTask` in `sop-backend/src/module/tasks/task/resolvers.ts`.
 - **`bull-queue`** — `queue.add('<job>')` producers ↔ `process('<job>')` consumers (e.g. `src/queue/task/`).
 - **`react-router`** — routes ↔ page components, so flows start at a user-visible screen.
+- **`rest`**, **`kafka`**, **`sqs`**, **`rabbitmq`** (added later) — HTTP calls ↔ server routes, and message
+  senders ↔ handlers through each broker. Details in docs/desktop.md.
 
 Unmatched references are recorded as **unresolved** edges, never guessed. Plugin interface: `name`, `config schema`, `run(graphs, checkouts) -> list[Edge]`.
 

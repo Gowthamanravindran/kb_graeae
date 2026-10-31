@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { MapView as MapPayload } from "../api/types";
+import type { Connections, MapView as MapPayload } from "../api/types";
 import { Mermaid } from "../components/Mermaid";
 import { useApp } from "../state";
 import { fakeApi, renderApp } from "../test-utils";
@@ -81,4 +81,90 @@ test("Mermaid falls back to the code on invalid input", async () => {
 test("no branch selected asks to pick one", async () => {
   renderApp(<MapView />, fakeApi(), { project: "sop", branch: null, view: "map" });
   expect(await screen.findByText(/Open a branch from the Library/)).toBeInTheDocument();
+});
+
+const CONN: Connections = {
+  lanes: [{ id: "sop-web", label: "sop-web", role: "frontend" }, { id: "sop-backend", label: "sop-backend", role: "backend" }, { id: "jobs", label: "Background jobs", role: "jobs" }],
+  nodes: [
+    { id: "sop-web::m-tasks", lane: "sop-web", kind: "module", module_id: "m-tasks", name: "Tasks", code_name: "m-tasks", links: 2,
+      routes: [{ path: "/tasks/create-task", repo: "sop-web", file: "src/App.tsx", line: 8 }] },
+    { id: "sop-backend::m-tasks", lane: "sop-backend", kind: "module", module_id: "m-tasks", name: "Tasks", code_name: "m-tasks", links: 2, routes: [] },
+    { id: "jobs::sop-backend::m-jobs", lane: "jobs", kind: "jobs", module_id: null, name: "Background jobs jobs", code_name: "m-jobs (jobs)", links: 1, routes: [] },
+  ],
+  edges: [
+    { id: "e1", source: "sop-web::m-tasks", target: "sop-backend::m-tasks", kind: "graphql", count: 2, items: [
+      { label: "AddTask", from: { repo: "sop-web", file: "src/tasks/TaskCreation.tsx", line: 14 }, to: { repo: "sop-backend", file: "src/tasks/resolvers.ts", line: 6 } },
+      { label: "UpdateTask", from: { repo: "sop-web", file: "src/tasks/TaskEdit.tsx", line: 9 }, to: { repo: "sop-backend", file: "src/tasks/resolvers.ts", line: 30 } }] },
+    { id: "e2", source: "sop-backend::m-tasks", target: "jobs::sop-backend::m-jobs", kind: "queue", count: 1, items: [
+      { label: "TASK_REPEAT", from: { repo: "sop-backend", file: "src/tasks/resolvers.ts", line: 20 }, to: { repo: "sop-backend", file: "src/queues/repeat.ts", line: 3 } }] },
+  ],
+  unresolved: { graphql: 3 },
+};
+
+test("graph_view_shows_how_repos_connect", async () => {
+  const openCitation = vi.fn(async () => ({ ok: true }));
+  (window as any).kb = { openCitation };
+  const a = fakeApi({ map: vi.fn(async () => MAP), connections: vi.fn(async () => CONN) });
+  renderApp(<MapView />, a, { project: "sop", branch: "main", view: "map" });
+  await userEvent.click(await screen.findByRole("radio", { name: "Graph" }));
+  expect(a.connections).toHaveBeenCalledWith("sop", "main");
+  expect(await screen.findByText("Background jobs", { selector: "div" })).toBeInTheDocument();
+  expect(screen.getByText(/3 GraphQL calls couldn't be matched/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /^Tasks.*sop-web/ }));
+  const panel = screen.getByRole("complementary", { name: "Connection details" });
+  expect(within(panel).getByText("/tasks/create-task")).toBeInTheDocument();
+  await userEvent.click(within(panel).getByRole("button", { name: /GraphQL.*sop-backend.*2/ }));
+  expect(within(panel).getByText("AddTask")).toBeInTheDocument();
+  await userEvent.click(within(panel).getByRole("button", { name: "src/tasks/TaskCreation.tsx:14" }));
+  expect(openCitation).toHaveBeenCalledWith({ project: "sop", branch: "main", repo: "sop-web", file: "src/tasks/TaskCreation.tsx", line: 14 });
+  delete (window as any).kb;
+});
+
+test("graph_view_with_no_links_explains_why", async () => {
+  const a = fakeApi({ map: vi.fn(async () => MAP), connections: vi.fn(async () => ({ lanes: [], nodes: [], edges: [], unresolved: {} })) });
+  renderApp(<MapView />, a, { project: "sop", branch: "main", view: "map" });
+  await userEvent.click(await screen.findByRole("radio", { name: "Graph" }));
+  expect(await screen.findByText(/No links between the repos were found/)).toBeInTheDocument();
+});
+
+test("graph_layout_keeps_each_repo_in_one_column", async () => {
+  const { graphLayout } = await import("./ConnectionsGraph");
+  const many = { ...CONN, nodes: Array.from({ length: 30 }, (_, i) => ({ ...CONN.nodes[1], id: `sop-backend::m${i}` })), edges: [] };
+  const { nodes } = graphLayout(many, null, null, () => {});
+  const xs = new Set(nodes.filter((n) => n.type === "box").map((n) => n.position.x));
+  expect(xs.size).toBe(1); // a second column would put the first column's lines behind its boxes
+});
+
+test("graph_layout_stacks_apps_and_services_in_role_columns", async () => {
+  const { graphLayout } = await import("./ConnectionsGraph");
+  const g: Connections = {
+    lanes: [{ id: "web", label: "web", role: "frontend" }, { id: "mobile", label: "mobile", role: "frontend" },
+      { id: "users", label: "users", role: "backend" }, { id: "pay", label: "pay", role: "backend" }, { id: "jobs", label: "Background jobs", role: "jobs" }],
+    nodes: ["web", "web", "mobile", "users", "pay", "jobs"].map((lane, i) => ({ ...CONN.nodes[0], id: `${lane}::m${i}`, lane, routes: [] })),
+    edges: [], unresolved: {},
+  };
+  const { nodes } = graphLayout(g, null, null, () => {});
+  const at = (id: string) => nodes.find((n) => n.id === id)!.position;
+  expect(at("web::m0").x).toBe(at("mobile::m2").x); // every app in the first column
+  expect(at("lane-mobile").y).toBeGreaterThan(at("web::m1").y); // mobile's group sits under web's
+  expect(at("users::m3").x).toBe(at("pay::m4").x);
+  expect(at("users::m3").x).toBeGreaterThan(at("web::m0").x);
+  expect(at("jobs::m5").x).toBeGreaterThan(at("users::m3").x);
+});
+
+test("graph_legend_names_rest_and_broker_links_present", async () => {
+  const conn = {
+    ...CONN,
+    edges: [...CONN.edges,
+      { id: "e3", source: "sop-web::m-tasks", target: "sop-backend::m-tasks", kind: "http", count: 1, items: [
+        { label: "GET /tasks/:id", from: { repo: "sop-web", file: "src/api.ts", line: 3 }, to: { repo: "sop-backend", file: "src/tasks/get.ts", line: 1 } }] },
+      { id: "e4", source: "sop-backend::m-tasks", target: "sop-backend::m-tasks", kind: "kafka", count: 1, items: [] }],
+    unresolved: { http: 1, message: 2 },
+  };
+  const a = fakeApi({ map: vi.fn(async () => MAP), connections: vi.fn(async () => conn) });
+  renderApp(<MapView />, a, { project: "sop", branch: "main", view: "map" });
+  await userEvent.click(await screen.findByRole("radio", { name: "Graph" }));
+  const legend = await screen.findByRole("list", { name: "Link types" });
+  expect(within(legend).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["GraphQL", "REST", "Queue", "Kafka"]);
+  expect(screen.getByText(/1 REST call, 2 messages couldn't be matched/)).toBeInTheDocument();
 });

@@ -8,6 +8,7 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { cn } from "../lib";
 import { useApp } from "../state";
+import { ConnectionsGraph } from "./ConnectionsGraph";
 
 const W = 230, H = 96, GAP = 24, COLS = 4, BAND = 40;
 
@@ -78,7 +79,8 @@ export function MapView() {
   const { api, project, branch, go } = useApp();
   const [map, setMap] = useState<MapPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [codeNames, setCodeNames] = useState(false);
+  const [mode, setMode] = useState<"plain" | "code" | "graph">("plain");
+  const codeNames = mode === "code";
   const [selected, setSelected] = useState<string | null>(null);
   const [overview, setOverview] = useState(false);
   useEffect(() => {
@@ -102,13 +104,14 @@ export function MapView() {
           <h1 className="text-[26px] font-bold tracking-tight">How {project} is put together</h1>
           <p className="mt-1.5 text-muted">{branch} · {map.modules.length} modules</p>
         </div>
-        <div role="radiogroup" aria-label="Labels" className="flex rounded-lg border border-line bg-surface p-1">
-          {[["Plain English", false], ["Code names", true]].map(([label, v]) => (
-            <button key={String(label)} type="button" role="radio" aria-checked={codeNames === v} onClick={() => setCodeNames(v as boolean)}
-              className={cn("rounded-md px-3 py-1.5 text-sm", codeNames === v ? "bg-ink text-white" : "text-muted")}>{label as string}</button>
+        <div role="radiogroup" aria-label="View" className="flex rounded-lg border border-line bg-surface p-1">
+          {([["Plain English", "plain"], ["Code names", "code"], ["Graph", "graph"]] as const).map(([label, v]) => (
+            <button key={v} type="button" role="radio" aria-checked={mode === v} onClick={() => setMode(v)}
+              className={cn("rounded-md px-3 py-1.5 text-sm", mode === v ? "bg-ink text-white" : "text-muted")}>{label}</button>
           ))}
         </div>
       </div>
+      {mode === "graph" ? <ConnectionsGraph modules={map.modules} /> : (
       <div className="flex flex-col gap-5 lg:flex-row">
         <Card className="h-[560px] min-w-0 flex-1 overflow-hidden">
           <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView minZoom={0.2} nodesConnectable={false}
@@ -156,6 +159,7 @@ export function MapView() {
           </Card>
         </aside>
       </div>
+      )}
       {map.system_md && (
         <Card className="p-5">
           <button type="button" aria-expanded={overview} className="flex w-full items-center justify-between text-left font-semibold" onClick={() => setOverview((o) => !o)}>

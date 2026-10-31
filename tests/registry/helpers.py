@@ -13,9 +13,9 @@ from kb_registry.storage import FileBlobStore
 class Reg:
     """An in-process registry on SQLite + a folder of blobs, with helpers to seed it."""
 
-    def __init__(self, tmp: Path, **settings):
+    def __init__(self, tmp: Path, url: str | None = None, **settings):
         tmp.mkdir(parents=True, exist_ok=True)
-        url = f"sqlite:///{tmp / 'reg.db'}"
+        url = url or f"sqlite:///{tmp / 'reg.db'}"
         upgrade(url)
         self.settings = Settings(database_url=url, storage=f"file://{tmp / 'blobs'}", **settings)
         self.app = create_app(self.settings, FileBlobStore(tmp / "blobs"))
@@ -52,8 +52,8 @@ class Reg:
         return c
 
 
-def seeded(tmp: Path, **settings) -> Reg:
-    r = Reg(tmp, **settings)
+def seeded(tmp: Path, url: str | None = None, **settings) -> Reg:
+    r = Reg(tmp, url, **settings)
     r.project("mini")
     for email, role in [("maint@x", "maintainer"), ("contrib@x", "contributor"), ("view@x", "viewer")]:
         r.user(email)

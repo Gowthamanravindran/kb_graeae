@@ -30,10 +30,24 @@ class LinkerConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     type: str
-    from_: str | None = Field(default=None, alias="from")
-    to: str | None = None
-    in_: str | None = Field(default=None, alias="in")
+    # one repo or a list: several apps calling several services, or queues shared by several services
+    from_: str | list[str] | None = Field(default=None, alias="from")
+    to: str | list[str] | None = None
+    in_: str | list[str] | None = Field(default=None, alias="in")
     options: dict[str, Any] = Field(default_factory=dict)
+
+    @staticmethod
+    def _list(v: str | list[str] | None) -> list[str]:
+        return [] if v is None else [v] if isinstance(v, str) else list(v)
+
+    def froms(self) -> list[str]:
+        return self._list(self.from_)
+
+    def tos(self) -> list[str]:
+        return self._list(self.to)
+
+    def ins(self) -> list[str]:
+        return self._list(self.in_)
 
 
 class ProjectConfig(BaseModel):
@@ -61,8 +75,8 @@ class ProjectConfig(BaseModel):
     def _references(self) -> "ProjectConfig":
         names = {r.name for r in self.repos}
         for lk in self.linkers:
-            for ref in (lk.from_, lk.to, lk.in_):
-                if ref is not None and ref not in names:
+            for ref in lk.froms() + lk.tos() + lk.ins():
+                if ref not in names:
                     raise ValueError(f"linker '{lk.type}' refers to unknown repo '{ref}'")
         for entry in self.context_docs:
             repo, sep, _ = entry.partition(":")

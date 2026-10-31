@@ -50,5 +50,5 @@ test("useJob gives up when the engine stops answering", async () => {
   const api = { job: vi.fn(async () => { throw new TypeError("Failed to fetch"); }) } as unknown as Parameters<typeof useJob>[0];
   const { result } = renderHook(() => useJob(api, "j1", 5));
   await waitFor(() => expect(result.current.failed).toBe(true));
-  expect(result.current.job?.error).toMatch(/Lost contact with the KB engine/);
+  expect(result.current.job?.error).toMatch(/Lost contact with the Graeae engine/);
 });

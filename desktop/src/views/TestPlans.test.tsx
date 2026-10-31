@@ -130,3 +130,17 @@ test("pr_link_lookup_runs_only_when_the_link_changes", async () => {
   expect(a.prInfo).toHaveBeenCalledTimes(1);
   expect(base).toHaveValue("release");
 });
+
+test("shared_plans_list_opens_by_pulling", async () => {
+  const a = api({
+    sharedTestplans: vi.fn(async () => [{ plan_id: "pr-9", label: "production", title: "Team plan", kind: "pr", counts_by_status: { planned: 3 }, updated_at: "", local: false }]),
+    pullTestplan: vi.fn(async () => ({ job_id: "jP" })),
+    job: vi.fn(async (id: string) => ({ id, kind: "testplan", key: null, state: "done", step: "", progress: 1, result: { plan_id: "pr-9", label: "production" }, error: null, created_at: "" })),
+  });
+  renderApp(<><TestPlans /><Probe /></>, a);
+  const sec = await screen.findByRole("region", { name: "Shared with the team" });
+  expect(within(sec).getByText("Team plan")).toBeInTheDocument();
+  await userEvent.click(within(sec).getByRole("button", { name: "Open" }));
+  expect(a.pullTestplan).toHaveBeenCalledWith("sop", "production", "pr-9");
+  await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("testplans|pr-9|board"));
+});

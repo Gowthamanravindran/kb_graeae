@@ -324,7 +324,7 @@ def serve(
     exit_on_stdin_eof: bool = typer.Option(False, "--exit-on-stdin-eof",
                                            help="Stop when stdin closes (the desktop app holds it open)"),
 ) -> None:
-    """Run the local API for KB Desktop (127.0.0.1 only; needs KB_SERVE_TOKEN)."""
+    """Run the local API for the Graeae desktop app (127.0.0.1 only; needs KB_SERVE_TOKEN)."""
     import json
     import os
     import sys
@@ -415,7 +415,8 @@ def testplan_pr(
     store = PackStore()
     req = ChangeSetRequest(project=cfg.project, base=_pairs(base, "--base"), head=_pairs(head, "--head"),
                            pr_links=_pairs(pr, "--pr"))
-    rep = run_impact(cfg, req, store, get_provider(), make_tracer(cfg), author=_author())
+    rep = run_impact(cfg, req, store, get_provider(), make_tracer(cfg), author=_author(),
+                     client=_team_client_or_none(cfg))
     label = _plan_label(store, cfg.project, rep.change_set_id)
     typer.echo(f"plan {rep.change_set_id}")
     typer.echo(f"  {len(rep.inventory)} decision points, {len(rep.flows)} flows affected")
@@ -466,12 +467,115 @@ def testplan_generate(
     cfg = load_config(config)
     store = PackStore()
     label = _plan_label(store, cfg.project, plan_id)
-    kind = PlanStore(store).load_change_set(cfg.project, label, plan_id).kind
-    res = run_design(cfg, plan_id, label, store, get_provider(), make_tracer(cfg), "scenario" if kind == "scenario" else "more",
+    cs = PlanStore(store).load_change_set(cfg.project, label, plan_id)
+    res = run_design(cfg, plan_id, label, store, get_provider(), make_tracer(cfg), "scenario" if cs.kind == "scenario" else "more",
                      {"P0": p0, "P1": p1, "P2": p2, "P3": p3}, per_flow, author=_author(),
-                     progress=lambda text, frac: typer.echo(f"  {text}", err=True))
+                     progress=lambda text, frac: typer.echo(f"  {text}", err=True),
+                     client=_team_client(cfg) if cs.shared else None)
+    for w in res.warnings:
+        typer.echo(f"warning: {w}", err=True)
     typer.echo(f"wrote {res.written} cases" + (f", {res.failed} failed" if res.failed else "")
-               + (f", {res.extras} suggested extras" if res.extras else ""))
+               + (f", {res.extras} suggested extras" if res.extras else "")
+               + (f", {res.extras_from_conflicts} already written by a teammate (kept as extras)" if res.extras_from_conflicts else ""))
+
+
+def _team_client_or_none(cfg):
+    """The registry client when the project has one (a shared plan's re-run updates the team's copy)."""
+    from kb.errors import KbError
+
+    try:
+        return _team_client(cfg) if cfg.registry else None
+    except KbError:
+        return None
+
+
+def _team_client(cfg):
+    from kb.errors import ConfigError
+    from kb.sync import client as sc
+
+    if not cfg.registry:
+        raise ConfigError("this project has no registry: add `registry:` to kb.yaml to work as a team")
+    return sc.client_for(cfg)
+
+
+@testplan_app.command("share")
+@handle_errors
+def testplan_share(config: Path = typer.Argument(...), plan_id: str = typer.Argument(...)) -> None:
+    """Share a test plan with the team through the registry (push the analysis first)."""
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+    from kb.testplan import shared
+
+    cfg = load_config(config)
+    store = PackStore()
+    label = _plan_label(store, cfg.project, plan_id)
+    shared.share(cfg, label, plan_id, store, _team_client(cfg))
+    typer.echo(f"shared {plan_id} on {cfg.project}@{label}")
+
+
+@testplan_app.command("pull")
+@handle_errors
+def testplan_pull(config: Path = typer.Argument(...), plan_id: str = typer.Argument(...),
+                  label: str = typer.Option(..., "--label", help="The analysis the plan belongs to, e.g. production")) -> None:
+    """Download a test plan a teammate shared."""
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+    from kb.testplan import shared
+
+    cfg = load_config(config)
+    shared.pull(cfg, label, plan_id, PackStore(), _team_client(cfg))
+    typer.echo(f"pulled {plan_id}")
+
+
+@testplan_app.command("sync")
+@handle_errors
+def testplan_sync(config: Path = typer.Argument(...), plan_id: str = typer.Argument(...)) -> None:
+    """Send work done offline and take the team's latest cases, reservations and assignments."""
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+    from kb.testplan import shared
+
+    cfg = load_config(config)
+    store = PackStore()
+    r = shared.sync(cfg, _plan_label(store, cfg.project, plan_id), plan_id, store, _team_client(cfg))
+    typer.echo("offline: nothing synced" if r.offline else f"synced: {r.accepted} accepted, {r.extras} became extras")
+
+
+@testplan_app.command("assign")
+@handle_errors
+def testplan_assign(config: Path = typer.Argument(...), plan_id: str = typer.Argument(...),
+                    flow: list[str] = typer.Option(None, "--flow"), slot: list[str] = typer.Option(None, "--slot"),
+                    to: str = typer.Option(None, "--to", help="Member email; leave out to unassign")) -> None:
+    """QA lead: assign flows or slots to a teammate."""
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+    from kb.testplan import shared
+
+    cfg = load_config(config)
+    store = PackStore()
+    label = _plan_label(store, cfg.project, plan_id)
+    client = _team_client(cfg)
+    r = client.assign(cfg.project, label, plan_id, slot_ids=slot or None, flow_ids=flow or None, email=to)
+    shared.sync(cfg, label, plan_id, store, client)
+    typer.echo(f"assigned {len(r['assigned'])} slots" + (f" to {to}" if to else " (unassigned)"))
+
+
+@testplan_app.command("release")
+@handle_errors
+def testplan_release(config: Path = typer.Argument(...), plan_id: str = typer.Argument(...),
+                     slot: list[str] = typer.Option(..., "--slot")) -> None:
+    """Give reserved slots back (a QA lead can release anyone's)."""
+    from kb.config import load_config
+    from kb.packs.store import PackStore
+    from kb.testplan import shared
+
+    cfg = load_config(config)
+    store = PackStore()
+    label = _plan_label(store, cfg.project, plan_id)
+    client = _team_client(cfg)
+    r = client.release(cfg.project, label, plan_id, slot)
+    shared.sync(cfg, label, plan_id, store, client)
+    typer.echo("released " + (", ".join(r["released"]) or "nothing"))
 
 
 @testplan_app.command("status")

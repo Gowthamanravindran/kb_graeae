@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -80,6 +81,20 @@ class ProjectIn(BaseModel):
     config_path: str
 
 
+class AssignBody(BaseModel):
+    slot_ids: list[str] | None = None
+    flow_ids: list[str] | None = None
+    email: str | None = None
+
+
+class ReleaseBody(BaseModel):
+    slot_ids: list[str]
+
+
+class InspectIn(BaseModel):
+    sources: list[str]
+
+
 SETTINGS_KEYS = ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST", "GITHUB_TOKEN")
 PLAIN_SETTINGS = {"LANGFUSE_HOST"}
 
@@ -123,6 +138,7 @@ class SsoIn(BaseModel):
 class AnalyzeIn(BaseModel):
     resume: bool = False
     branches: dict[str, str] | None = None  # a branch per repo; the path's branch is then the pack's label
+    fresh: bool = False  # delete the branch's analysis (answers, test plans) first and start from scratch
 
 
 class AskIn(BaseModel):
@@ -182,6 +198,33 @@ def create_app(settings: ServeSettings) -> FastAPI:
     @app.post("/api/projects")
     def add_project(body: ProjectIn) -> dict:
         return ws.add(Path(body.config_path))
+
+    @app.post("/api/projects/inspect")
+    def inspect_project(body: InspectIn) -> dict:
+        """Read repos given as links or folders (cloning a link to scratch) and suggest the project's set-up."""
+        from kb.project_setup import inspect_repos
+
+        sources = [s for s in body.sources if s.strip()]
+        if not sources:
+            raise HTTPException(400, "add at least one repo link or folder")
+
+        def run(rep):
+            got = inspect_repos(sources, settings.kb_home, progress=lambda t, f: rep.step(t, f))
+            return {"repos": [r.model_dump(mode="json", exclude={"signals"}) for r in got.repos],
+                    "linkers": [lk.model_dump(by_alias=True, exclude_none=True) for lk in got.linkers]}
+        return {"job_id": jobs.submit("inspect", run).id}
+
+    @app.post("/api/projects/create")
+    def create_project(body: dict) -> dict:
+        from kb.project_setup import NewProject, write_project
+
+        try:
+            spec = NewProject.model_validate(body)
+        except ValueError as e:
+            raise HTTPException(400, f"that project isn't valid: {e}") from e
+        if any(p["name"] == spec.project for p in ws.projects()):
+            raise KbError(f"a project named {spec.project} already exists")
+        return ws.add(write_project(settings.kb_home, spec))
 
     @app.delete("/api/projects/{name}")
     def remove_project(name: str) -> dict:
@@ -288,19 +331,44 @@ def create_app(settings: ServeSettings) -> FastAPI:
 
     @app.post("/api/projects/{name}/branches/{branch:path}/analyze")
     def analyze(name: str, branch: str, body: AnalyzeIn) -> dict:
-        from kb.analyze import run_analyze
         from kb.cli import _author
         from kb.tracing import make_tracer
 
         cfg = ws.config(name)
+        store = settings.store()
+        branches = body.branches
+        if branches is None and store.exists(cfg.project, branch):  # re-analysing: same branch per repo as before
+            prev = json.loads((store.pack_dir(cfg.project, branch) / "manifest.json").read_text()).get("branches") or {}
+            branches = prev if len(set(prev.values()) - {branch}) else None
 
         def run(rep):
-            m = run_analyze(cfg, branch, settings.store(), settings.provider(), make_tracer(cfg), resume=body.resume, branches=body.branches,
-                            author=_author(), progress=lambda text, frac: rep.step(text, frac))
+            from kb import analyze as an
+
+            if body.fresh:
+                rep.step("Deleting the old analysis", 0.01)
+                store.delete(cfg.project, branch)
+            m = an.run_analyze(cfg, branch, store, settings.provider(), make_tracer(cfg), resume=body.resume and not body.fresh,
+                               branches=branches, author=_author(), progress=lambda text, frac: rep.step(text, frac))
             return {"status": m.status, "stats": m.stats, "failed_modules": m.failed_modules}
         return {"job_id": submit_or_409(jobs, "analyze", run, key=_branch_key(cfg.project, branch),
                                           scope=branch_scope(cfg.project, branch), exclusive=True).id}
 
+
+    @app.delete("/api/projects/{name}/branches/{branch:path}")
+    def delete_branch(name: str, branch: str) -> dict:
+        """Delete a branch's analysis from this computer (the registry's copy stays). Runs as an exclusive job
+        so it never pulls a pack from under a running question, analysis or test plan."""
+        cfg = ws.config(name)
+        store = settings.store()
+        if not store.pack_dir(cfg.project, branch).exists():
+            raise HTTPException(404, f"no analysis of {branch} on this computer")
+
+        def run(rep):
+            rep.step(f"Deleting {branch}", 0.5)
+            store.delete(cfg.project, branch)
+            return {"deleted": branch}
+        return {"job_id": submit_or_409(jobs, "delete", run, key=_branch_key(cfg.project, branch),
+                                        scope=branch_scope(cfg.project, branch), exclusive=True).id}
 
     def _ask_job(cfg, branch: str, question: str, from_qa=None, no_reuse=False):
         def run(rep):
@@ -362,6 +430,14 @@ def create_app(settings: ServeSettings) -> FastAPI:
         cfg = ws.config(name)
         _readable(cfg.project, branch)
         return map_view(cfg, settings.store().load(cfg.project, branch))
+
+    @app.get("/api/projects/{name}/branches/{branch:path}/connections")
+    def connections(name: str, branch: str) -> dict:
+        from kb.serve.views import connections_view
+
+        cfg = ws.config(name)
+        _readable(cfg.project, branch)
+        return connections_view(cfg, settings.store().load(cfg.project, branch))
 
     @app.get("/api/projects/{name}/branches/{branch:path}/memory")
     def memory(name: str, branch: str) -> dict:
@@ -499,8 +575,14 @@ def create_app(settings: ServeSettings) -> FastAPI:
         req = ChangeSetRequest(project=cfg.project, base=body.base, head=body.head, pr_links=body.pr_links, title=body.title)
 
         def run(rep):
+            team = None
+            if cfg.registry:  # a shared plan's re-run must update the team's copy, or the next sync reverts it
+                try:
+                    team = settings.client(cfg)
+                except KbError:
+                    team = None
             r = run_impact(cfg, req, settings.store(), settings.provider(), make_tracer(cfg),
-                           progress=lambda text, frac: rep.step(text, frac), author=_author())
+                           progress=lambda text, frac: rep.step(text, frac), author=_author(), client=team)
             return {"plan_id": r.change_set_id, "flows": len(r.flows), "inventory": len(r.inventory)}
         return {"job_id": submit_or_409(jobs, "testplan", run, key=f"testplan-impact:{cfg.project}").id}
 
@@ -521,6 +603,131 @@ def create_app(settings: ServeSettings) -> FastAPI:
             return {"plan_id": sp.plan_id, "counts": sp.counts}
         return {"job_id": submit_or_409(jobs, "testplan", run, scope=branch_scope(cfg.project, body.label)).id}
 
+    # ---------- shared test plans (stage 5b) ----------
+
+    def _team(cfg):
+        if not cfg.registry:
+            raise HTTPException(400, "This project has no registry. Add `registry:` to kb.yaml to work as a team.")
+        return settings.client(cfg)
+
+    @app.get("/api/projects/{name}/testplans/shared")
+    def shared_testplans(name: str) -> list[dict]:
+        """Plans teammates shared, for every analysis on this computer."""
+        from kb.serve.views import local_branches
+        from kb.testplan.store import PlanStore
+
+        cfg = ws.config(name)
+        client = _team(cfg)
+        ps = PlanStore(settings.store())
+        out = []
+        for label in local_branches(settings.store(), cfg.project):
+            try:
+                rows = client.plans(cfg.project, label)
+            except KbError:
+                continue  # not on the registry (never pushed), or unreachable
+            for r in rows:
+                local = (ps.dir(cfg.project, label, r["plan_id"]) / "changeset.json").exists()
+                out.append({**r, "label": label, "local": local})
+        return out
+
+    @app.post("/api/projects/{name}/testplans/shared/{label}/{plan_id}/pull")
+    def pull_testplan(name: str, label: str, plan_id: str) -> dict:
+        from kb.testplan import shared
+
+        cfg = ws.config(name)
+        client = _team(cfg)
+
+        def run(rep):
+            rep.step("Downloading the team's plan", 0.3)
+            shared.pull(cfg, label, plan_id, settings.store(), client)
+            return {"plan_id": plan_id, "label": label}
+        return {"job_id": submit_or_409(jobs, "testplan", run, key=f"testplan:{cfg.project}:{plan_id}").id}
+
+    @app.post("/api/projects/{name}/testplans/{plan_id}/share")
+    def share_testplan(name: str, plan_id: str) -> dict:
+        from kb.errors import RegistryError
+        from kb.testplan import shared
+
+        cfg = ws.config(name)
+        ps, label = _plan(cfg, plan_id)
+        client = _team(cfg)
+
+        def run(rep):
+            rep.step("Sharing with the team", 0.3)
+            try:
+                shared.share(cfg, label, plan_id, settings.store(), client)
+            except RegistryError as e:
+                if e.status == 404:
+                    raise KbError(f"Push {label} to the registry first: a shared plan lives with the analysis "
+                                  "it was planned against") from e
+                raise
+            return {"plan_id": plan_id}
+        return {"job_id": submit_or_409(jobs, "testplan", run, key=f"testplan:{cfg.project}:{plan_id}",
+                                        scope=branch_scope(cfg.project, label)).id}
+
+    @app.post("/api/projects/{name}/testplans/{plan_id}/sync")
+    def sync_testplan(name: str, plan_id: str) -> dict:
+        from kb.testplan import shared
+
+        cfg = ws.config(name)
+        ps, label = _plan(cfg, plan_id)
+        client = _team(cfg)
+
+        def run(rep):
+            rep.step("Syncing with the team", 0.3)
+            r = shared.sync(cfg, label, plan_id, settings.store(), client)
+            return {"accepted": r.accepted, "extras": r.extras, "offline": r.offline}
+        return {"job_id": submit_or_409(jobs, "testplan", run, key=f"testplan:{cfg.project}:{plan_id}",
+                                        scope=branch_scope(cfg.project, label)).id}
+
+    @app.post("/api/projects/{name}/testplans/{plan_id}/assign")
+    def assign_testplan(name: str, plan_id: str, body: AssignBody) -> dict:
+        from kb.testplan import shared
+
+        cfg = ws.config(name)
+        ps, label = _plan(cfg, plan_id)
+        client = _team(cfg)
+        out = client.assign(cfg.project, label, plan_id, slot_ids=body.slot_ids, flow_ids=body.flow_ids, email=body.email)
+        shared.sync(cfg, label, plan_id, settings.store(), client)
+        return out
+
+    @app.post("/api/projects/{name}/testplans/{plan_id}/release")
+    def release_testplan(name: str, plan_id: str, body: ReleaseBody) -> dict:
+        from kb.testplan import shared
+
+        cfg = ws.config(name)
+        ps, label = _plan(cfg, plan_id)
+        client = _team(cfg)
+        out = client.release(cfg.project, label, plan_id, body.slot_ids)
+        shared.sync(cfg, label, plan_id, settings.store(), client)
+        return out
+
+    @app.get("/api/projects/{name}/testplans/{plan_id}/people")
+    def testplan_people(name: str, plan_id: str) -> dict:
+        """Who is on the team, your role, and per person how many cases they wrote and hold."""
+        cfg = ws.config(name)
+        ps, label = _plan(cfg, plan_id)
+        client = _team(cfg)
+        who = client.me()
+        me = who.get("email")
+        members = client.members(cfg.project)
+        shared_plan = ps.load_change_set(cfg.project, label, plan_id).shared
+        view = client.plan(cfg.project, label, plan_id) if shared_plan else {"items": [], "slots": []}
+        # registry admins pass every role check, so they get the lead's controls
+        role = "maintainer" if who.get("is_admin") else next((m["role"] for m in members if m["email"] == me), None)
+        authors = {i["id"]: i["author"] for i in view["items"] if i["kind"] == "testcase"}
+        written: dict[str, int] = {}
+        reserved: dict[str, int] = {}
+        for sl in view["slots"]:
+            if sl["status"] in ("written", "stale") and sl.get("case_id") in authors:
+                written[authors[sl["case_id"]]] = written.get(authors[sl["case_id"]], 0) + 1
+            if sl.get("reserved_by"):
+                reserved[sl["reserved_by"]] = reserved.get(sl["reserved_by"], 0) + 1
+        people = sorted(set(written) | set(reserved) | ({me} if me and shared_plan else set()))
+        return {"me": me, "role": role, "members": members,
+                "progress": [{"email": e, "written": written.get(e, 0), "reserved": reserved.get(e, 0)} for e in people],
+                "trace_locks": view.get("trace_locks", [])}
+
     @app.get("/api/projects/{name}/testplans/{plan_id}")
     def get_testplan(name: str, plan_id: str) -> dict:
         from kb.testplan.graph_design import coverage_for
@@ -530,8 +737,12 @@ def create_app(settings: ServeSettings) -> FastAPI:
         summary = ps.summary(cfg.project, label, plan_id)
         impact = ps.load_impact(cfg.project, label, plan_id)
         cases = ps.cases(cfg.project, label, plan_id)
+        cs = ps.load_change_set(cfg.project, label, plan_id)
+        from kb.testplan import shared as _shared
+
         return {"summary": summary.model_dump(mode="json") if summary else None,
-                "change_set": ps.load_change_set(cfg.project, label, plan_id).model_dump(mode="json"),
+                "shared": cs.shared, "pending": _shared.pending(settings.store(), cfg.project, label, plan_id),
+                "change_set": cs.model_dump(mode="json"),
                 "impact": impact.model_dump(mode="json") if impact else None,
                 "slots": [s.model_dump(mode="json") for s in ps.load_slots(cfg.project, label, plan_id)],
                 "scenarios": [s.model_dump(mode="json") for s in ps.scenarios(cfg.project, label, plan_id)],
@@ -544,12 +755,17 @@ def create_app(settings: ServeSettings) -> FastAPI:
         from kb.testplan import graph_design
         from kb.tracing import make_tracer
 
+        from kb.testplan.store import PlanStore as _PS
+
+        shared_plan = _PS(settings.store()).load_change_set(cfg.project, label, plan_id).shared
+        team = settings.client(cfg) if cfg.registry and shared_plan else None
+
         def run(rep):
             if before is not None:  # changes that must wait until the job is sure to run
                 before()
             res = graph_design.run_design(cfg, plan_id, label, settings.store(), settings.provider(), make_tracer(cfg),
                                           mode, counts, cap, progress=lambda text, frac: rep.step(text, frac),
-                                          author=_author(), only=only, flow_ids=flow_ids)
+                                          author=_author(), only=only, flow_ids=flow_ids, client=team)
             return res.model_dump()
         return {"job_id": submit_or_409(jobs, "testplan", run, key=f"testplan:{cfg.project}:{plan_id}",
                                         scope=branch_scope(cfg.project, label)).id}

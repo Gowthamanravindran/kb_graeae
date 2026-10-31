@@ -1,9 +1,9 @@
 {
-  "name": "kb-desktop",
-  "productName": "KB Desktop",
+  "name": "graeae",
+  "productName": "Graeae",
   "version": "0.1.0",
   "private": true,
-  "description": "KB Desktop: understand and share how your codebase works",
+  "description": "Graeae: understand and share how your codebase works",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite build && tsc -p tsconfig.electron.json && electron .",

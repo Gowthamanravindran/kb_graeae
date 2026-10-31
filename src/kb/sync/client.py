@@ -98,6 +98,62 @@ class RegistryClient:
     def publish(self, p: str, b: str, items: list[dict]) -> dict:
         return self._req("POST", f"/projects/{p}/branches/{b}/overlay", json={"items": items}).json()
 
+    # ---- shared test plans (stage 5b) ----
+    def _tp(self, p: str, b: str, plan_id: str = "") -> str:
+        return f"/projects/{p}/branches/{b}/testplans" + (f"/{plan_id}" if plan_id else "")
+
+    def members(self, p: str) -> list:
+        return self._req("GET", f"/projects/{p}/members").json()
+
+    def share_plan(self, p: str, b: str, plan_id: str, changeset: dict, impact: dict, slots: list[dict]) -> dict:
+        return self._req("PUT", self._tp(p, b, plan_id), json={"changeset": changeset, "impact": impact, "slots": slots}).json()
+
+    def plans(self, p: str, b: str) -> list:
+        return self._req("GET", self._tp(p, b)).json()
+
+    def plan(self, p: str, b: str, plan_id: str) -> dict:
+        return self._req("GET", self._tp(p, b, plan_id)).json()
+
+    def reserve(self, p: str, b: str, plan_id: str, *, slot_ids=None, counts=None, per_flow_cap=None, flow_ids=None) -> dict:
+        body = {k: v for k, v in {"slot_ids": slot_ids, "counts": counts, "per_flow_cap": per_flow_cap,
+                                  "flow_ids": flow_ids}.items() if v is not None}
+        return self._req("POST", self._tp(p, b, plan_id) + "/reservations", json=body).json()
+
+    def renew(self, p: str, b: str, plan_id: str, slot_ids: list[str]) -> dict:
+        return self._req("POST", self._tp(p, b, plan_id) + "/reservations/renew", json={"slot_ids": slot_ids}).json()
+
+    def release(self, p: str, b: str, plan_id: str, slot_ids: list[str]) -> dict:
+        return self._req("DELETE", self._tp(p, b, plan_id) + "/reservations", json={"slot_ids": slot_ids}).json()
+
+    def assign(self, p: str, b: str, plan_id: str, *, slot_ids=None, flow_ids=None, email: str | None) -> dict:
+        return self._req("POST", self._tp(p, b, plan_id) + "/assign",
+                         json={"slot_ids": slot_ids, "flow_ids": flow_ids, "email": email}).json()
+
+    def lock_trace(self, p: str, b: str, plan_id: str, flow_id: str, side: str) -> dict:
+        try:
+            return self._req("POST", self._tp(p, b, plan_id) + f"/traces/{flow_id}/{side}/lock").json()
+        except RegistryError as e:
+            if e.status == 409:
+                raise TraceBusy(e.body.get("holder", "someone"), e.body.get("until")) from e
+            raise
+
+    def unlock_trace(self, p: str, b: str, plan_id: str, flow_id: str, side: str) -> dict:
+        return self._req("DELETE", self._tp(p, b, plan_id) + f"/traces/{flow_id}/{side}/lock").json()
+
+    def publish_plan_items(self, p: str, b: str, plan_id: str, items: list[dict]) -> dict:
+        return self._req("POST", self._tp(p, b, plan_id) + "/items", json={"items": items}).json()
+
+    def case_ids(self, p: str, b: str, plan_id: str, count: int) -> list[str]:
+        return self._req("POST", self._tp(p, b, plan_id) + "/case-ids", json={"count": count}).json()["ids"]
+
+
+class TraceBusy(KbError):
+    """Someone else is tracing this flow right now."""
+
+    def __init__(self, holder: str, until: str | None):
+        super().__init__(f"{holder} is tracing this flow")
+        self.holder, self.until = holder, until
+
 
 def resolve_url(cfg=None, registry: str | None = None) -> str:
     url = registry or (cfg.registry if cfg is not None else None)

@@ -49,7 +49,9 @@ class ReactRouterLinker:
     type = "react-router"
 
     def run(self, ctx: LinkContext) -> list[CodeEdge]:
-        repo = ctx.config.in_
+        return [e for repo in ctx.config.ins() for e in self._repo(ctx, repo)]
+
+    def _repo(self, ctx: LinkContext, repo: str) -> list[CodeEdge]:
         root = ctx.checkouts[repo].root.resolve()
         g = ctx.graph
         files = list(ts.iter_source_files(root, list(ctx.ignore)))

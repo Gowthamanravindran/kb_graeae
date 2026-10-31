@@ -20,7 +20,8 @@ import networkx as nx
 
 from kb.graph.model import CodeGraph
 
-LINKER_KINDS = {"sends_graphql", "handled_by", "routes_to", "enqueues", "consumed_by"}
+LINKER_KINDS = {"sends_graphql", "handled_by", "routes_to", "enqueues", "consumed_by", "calls_http", "served_by",
+                "publishes"}
 LINKER_WEIGHT = 5
 RESOLUTION = 4.0
 _ROOTS = {"src", "app", "lib"}

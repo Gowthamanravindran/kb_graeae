@@ -6,6 +6,7 @@ declare global {
       token: string;
       openExternal(url: string): Promise<void>;
       openCitation(c: { project: string; branch: string; repo: string; file: string; line: number }): Promise<{ ok: boolean; error?: string }>;
+      pickFolder?(): Promise<string | null>;
       pickFile(filters?: { name: string; extensions: string[] }[]): Promise<string | null>;
       saveFile(defaultName: string, data: Uint8Array): Promise<{ saved: boolean; path?: string }>;
       revealConfig(project: string): Promise<{ ok: boolean; error?: string }>;

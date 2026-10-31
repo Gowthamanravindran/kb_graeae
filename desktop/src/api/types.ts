@@ -45,6 +45,7 @@ export interface ImpactReport {
 export interface CaseSlot {
   id: string; flow_id: string; scenario_type: ScenarioType; inventory_ids: string[]; outcome: string; priority: Priority; rule: string;
   status: "planned" | "reserved" | "written" | "stale" | "failed" | "obsolete"; case_id: string | null; fail_reason: string | null;
+  reserved_by?: string | null; reserved_until?: string | null; assigned_to?: string | null;
 }
 export interface PlanScenario { id: string; flow_id: string; type: ScenarioType; title: string; description: string }
 export interface PlanCase {
@@ -60,5 +61,31 @@ export interface Coverage { items: Record<string, "covered" | "skipped" | "faile
 export interface TestPlanDetail {
   summary: PlanSummary | null; change_set: ChangeSetOut; impact: ImpactReport | null; slots: CaseSlot[];
   scenarios: PlanScenario[]; cases: PlanCase[]; extras: PlanCase[]; coverage: Coverage;
+  shared?: boolean; pending?: number;
 }
+export interface TeamPeople {
+  me: string | null; role: "viewer" | "contributor" | "maintainer" | null;
+  members: { email: string; name: string; role: string }[];
+  progress: { email: string; written: number; reserved: number }[];
+  trace_locks: { flow_id: string; side: string; holder: string; until: string }[];
+}
+export interface SharedPlanRow { plan_id: string; label: string; title: string; kind: string; counts_by_status: Record<string, number>; updated_at: string; local: boolean }
 export interface DesignResult { written: number; failed: number; extras: number }
+
+export interface InspectedRepo {
+  source: string; kind: "url" | "local"; name: string; role: string; is_git: boolean; default_branch: string | null;
+  branches: string[]; path: string | null; path_options: { path: string; name: string; role: string }[]; context_docs: string[];
+}
+export interface LinkerSpec { type: string; from?: string | string[]; to?: string | string[]; in?: string | string[]; options?: Record<string, unknown> }
+export interface Inspection { repos: InspectedRepo[]; linkers: LinkerSpec[] }
+export interface NewProjectBody {
+  project: string;
+  repos: { name: string; role: string; source: string; path: string | null; default_branch: string | null }[];
+  linkers: LinkerSpec[];
+  context_docs: string[];
+}
+
+export interface Loc { repo: string; file: string; line: number }
+export interface ConnNode { id: string; lane: string; kind: "module" | "jobs"; module_id: string | null; name: string; code_name: string; links: number; routes: { path: string; repo: string; file: string; line: number }[] }
+export interface ConnEdge { id: string; source: string; target: string; kind: string; count: number; items: { label: string; from: Loc | null; to: Loc | null }[] }
+export interface Connections { lanes: { id: string; label: string; role: string }[]; nodes: ConnNode[]; edges: ConnEdge[]; unresolved: Record<string, number> }

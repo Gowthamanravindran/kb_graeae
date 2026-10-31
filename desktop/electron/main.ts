@@ -16,7 +16,9 @@ let quitting = false;
 const repoRoot = path.resolve(__dirname, "..", "..");
 const uiDir = app.isPackaged ? path.join(process.resourcesPath, "ui") : path.join(__dirname, "..", "dist");
 const kbHome = process.env.KB_HOME || path.join(os.homedir(), ".kb");
-const logDir = path.join(app.getPath("userData"), "logs");
+// Tests give each launch its own browser storage (remembered screen, etc.); the app itself uses the default.
+if (process.env.KB_USER_DATA) app.setPath("userData", process.env.KB_USER_DATA);
+const logDir = path.join(kbHome, "logs"); // ~/.kb/logs, whatever the app is called
 
 function engineCommand(): { command: string; args: string[] } {
   const common = ["--port", "0", "--kb-home", kbHome, "--ui-dir", uiDir, "--exit-on-stdin-eof"];
@@ -72,7 +74,7 @@ function load(): void {
 
 function createWindow(): void {
   win = new BrowserWindow({
-    width: 1280, height: 840, minWidth: 960, minHeight: 640, title: "KB Desktop", backgroundColor: "#F6F6F4",
+    width: 1280, height: 840, minWidth: 960, minHeight: 640, title: "Graeae", backgroundColor: "#F6F6F4",
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true },
   });
   lockDown(win, () => (engine ? `http://127.0.0.1:${engine.port}` : null));
@@ -107,6 +109,10 @@ ipcMain.handle("kb:save-file", async (_e, defaultName: string, data: Uint8Array)
   if (r.canceled || !r.filePath) return { saved: false };
   await fs.promises.writeFile(r.filePath, Buffer.from(data));
   return { saved: true, path: r.filePath };
+});
+ipcMain.handle("kb:pick-folder", async () => {
+  const r = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+  return r.canceled ? null : r.filePaths[0];
 });
 ipcMain.handle("kb:pick-file", async (_e, filters: { name: string; extensions: string[] }[]) => {
   const r = await dialog.showOpenDialog({ properties: ["openFile"], filters });

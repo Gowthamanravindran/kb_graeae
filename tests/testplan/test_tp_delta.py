@@ -127,3 +127,22 @@ def test_move_with_edit_reports_only_the_edit(tmp_path):
     d, items = _inv_between(tmp_path, fx, "feature/repeat-end", "moved")
     assert [(i.kind, i.change) for i in items] == [("branch", "changed")]
     assert "monthly" in items[0].summary and items[0].file.endswith("task-resolvers.ts")
+
+
+def test_change_inside_a_method_marks_only_the_method(tmp_path):
+    from kb.graph.model import CodeGraph, CodeNode
+    from kb.ingest.checkout import Checkout
+    from kb.testplan.diff import Hunk
+
+    src = "export class S {\n  a(x) {\n    return x + 1;\n  }\n  b(y) {\n    return y;\n  }\n}\n"
+    for d in ("b", "h"):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "s.ts").write_text(src if d == "b" else src.replace("x + 1", "x + 2"))
+    g = CodeGraph()
+    for nid, kind, line in (("r:s.ts", "file", 1), ("r:s.ts#S", "variable", 1), ("r:s.ts#.a", "function", 2), ("r:s.ts#.b", "function", 5)):
+        g.add_node(CodeNode(id=nid, repo="r", kind=kind, name=nid.split("#")[-1], file="s.ts", line=line))
+    h = Hunk(repo="r", file="s.ts", old_file="s.ts", old_start=3, old_len=1, new_start=3, new_len=1,
+             added=["    return x + 2;"], removed=["    return x + 1;"])
+    d = graph_delta(g, g, [h], {"r": Checkout("r", tmp_path / "b", "1")}, {"r": Checkout("r", tmp_path / "h", "2")})
+    assert d.nodes_changed == ["r:s.ts#.a"]  # not the class: reach would start from every method's callers
+    assert d.hunk_owner == {0: "r:s.ts#.a"}

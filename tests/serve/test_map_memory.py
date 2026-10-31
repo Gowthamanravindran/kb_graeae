@@ -109,3 +109,27 @@ def test_feedback_langfuse_down_is_502(serve, monkeypatch):
     monkeypatch.setattr(langfuse, "Langfuse", Down)
     r = c.post("/api/feedback", json={"trace_id": "t1", "value": 1})
     assert r.status_code == 502 and r.json()["detail"] == "Langfuse is unreachable: refused"
+
+
+def test_connections_graph_between_repos(serve):
+    c, *_ = setup(serve)
+    g = c.get("/api/projects/mini/branches/main/connections").json()
+    assert g["lanes"] == [{"id": "mini-fe", "label": "mini-fe", "role": "frontend"},
+                          {"id": "mini-be", "label": "mini-be", "role": "backend"},
+                          {"id": "jobs", "label": "Background jobs", "role": "jobs"}]
+    nodes = {n["id"]: n for n in g["nodes"]}
+    assert set(nodes) == {"mini-fe::tasks", "mini-be::tasks", "jobs::(none)"}  # Audits has no links
+    fe = nodes["mini-fe::tasks"]
+    assert (fe["lane"], fe["name"], fe["code_name"], fe["module_id"]) == ("mini-fe", "Tasks", "tasks", "tasks")
+    assert fe["routes"] == [{"path": "/tasks/create-task", "repo": "mini-fe", "file": "src/App.tsx", "line": 8}]
+    q = nodes["jobs::(none)"]  # TASK_REPEAT has no consumer the linker could find
+    assert (q["lane"], q["kind"], q["name"]) == ("jobs", "jobs", "Queued, no worker found")
+    edges = {(e["source"], e["target"], e["kind"]): e for e in g["edges"]}
+    gql = edges[("mini-fe::tasks", "mini-be::tasks", "graphql")]
+    assert gql["count"] == 1
+    assert gql["items"] == [{"label": "AddTask",
+                             "from": {"repo": "mini-fe", "file": "src/tasks/TaskCreation.tsx", "line": 1},
+                             "to": {"repo": "mini-be", "file": "src/module/tasks/task/resolvers.ts", "line": 6}}]
+    job = edges[("mini-be::tasks", "jobs::(none)", "queue")]
+    assert job["count"] == 1 and job["items"][0]["label"] == "TASK_REPEAT"
+    assert g["unresolved"] == {"queue": 1}

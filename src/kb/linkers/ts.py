@@ -32,6 +32,8 @@ class CallHit:
     first_arg: str
     first_arg_kind: Literal["string", "member", "identifier", "other"]
     line: int
+    last_arg: str = ""  # the last argument's name when it is an identifier or `a.b` (never other source text)
+    n_args: int = 0
 
 
 @dataclass
@@ -136,7 +138,35 @@ def calls(tree: tsl.Tree, method: str) -> list[CallHit]:
         else:
             first, kind = _text(a), "other"
         obj = fn.child_by_field_name("object")
-        out.append(CallHit(_text(obj) if obj is not None else "", first, kind, n.start_point[0] + 1))
+        last = named[-1]
+        last_name = _text(last) if last.type in ("identifier", "member_expression") else ""
+        out.append(CallHit(_text(obj) if obj is not None else "", first, kind, n.start_point[0] + 1, last_name, len(named)))
+    return out
+
+
+_DECLS = {"function_declaration", "generator_function_declaration", "lexical_declaration", "variable_declaration",
+          "class_declaration"}
+
+
+def top_level_names(tree: tsl.Tree) -> list[tuple[str, int]]:
+    """Names declared at the top of a file (`function f`, `const f = …`, `export …`), with their line.
+    Destructured names (`const { f } = mod`) are only re-exports and are skipped."""
+    out = []
+    for node in tree.root_node.children:
+        decl = node
+        if node.type == "export_statement":
+            decl = node.child_by_field_name("declaration") or next((c for c in node.children if c.type in _DECLS), None)
+            if decl is None:
+                continue
+        if decl.type not in _DECLS:
+            continue
+        if decl.type in ("lexical_declaration", "variable_declaration"):
+            for c in decl.named_children:
+                n = c.child_by_field_name("name") if c.type == "variable_declarator" else None
+                if n is not None and n.type == "identifier":
+                    out.append((_text(n), node.start_point[0] + 1))
+        elif (n := decl.child_by_field_name("name")) is not None:
+            out.append((_text(n), node.start_point[0] + 1))
     return out
 
 
@@ -197,4 +227,171 @@ def string_constants(tree: tsl.Tree) -> dict[str, str]:
             name, val = n.child_by_field_name("name"), n.child_by_field_name("value")
             if name is not None and val is not None and val.type == "string" and name.type == "identifier":
                 out[_text(name)] = _string_value(val)
+    return out
+
+
+# ---------------------------------------------------------------- generic calls (REST and message brokers)
+
+@dataclass
+class Call:
+    """Any call or `new X(...)`. `args` are tree-sitter nodes: read them through `literal`/`props`, never store
+    their source text."""
+    name: str       # `fetch`, `get`, `SendMessageCommand`
+    receiver: str   # `axios`, `this.http`; "" for a plain call
+    args: list
+    line: int
+    is_new: bool = False
+    receiver_node: object = None
+
+
+def all_calls(tree: tsl.Tree) -> list[Call]:
+    out = []
+    for n in _walk(tree.root_node):
+        if n.type not in ("call_expression", "new_expression"):
+            continue
+        fn = n.child_by_field_name("function") if n.type == "call_expression" else n.child_by_field_name("constructor")
+        args = n.child_by_field_name("arguments")
+        if fn is None:
+            continue
+        named = [c for c in args.named_children if c.type != "comment"] if args is not None else []
+        if fn.type == "member_expression":
+            prop, obj = fn.child_by_field_name("property"), fn.child_by_field_name("object")
+            if prop is None:
+                continue
+            while obj is not None and obj.type == "parenthesized_expression" and obj.named_children:
+                obj = obj.named_children[0]   # `(api).get(…)`
+            out.append(Call(_text(prop), _text(obj) if obj is not None else "", named, n.start_point[0] + 1,
+                            n.type == "new_expression", obj))
+        elif fn.type == "identifier":
+            out.append(Call(_text(fn), "", named, n.start_point[0] + 1, n.type == "new_expression"))
+    return out
+
+
+def literal(n) -> str | None:
+    """A string or template literal's text, `${…}` written as `*`. None for anything else."""
+    if n is None:
+        return None
+    if n.type == "string":
+        return _string_value(n)
+    if n.type == "template_string":
+        return "".join("*" if c.type == "template_substitution" else _text(c)
+                       for c in n.children if c.type in ("string_fragment", "template_substitution", "escape_sequence"))
+    return None
+
+
+def props(n) -> dict:
+    """An object literal's properties: name -> value node (shorthand `{ topic }` maps to the identifier)."""
+    out = {}
+    if n is None or n.type != "object":
+        return out
+    for c in n.named_children:
+        if c.type == "pair":
+            k, v = c.child_by_field_name("key"), c.child_by_field_name("value")
+            if k is not None and v is not None:
+                out[_text(k).strip("'\"")] = v
+        elif c.type == "shorthand_property_identifier":
+            out[_text(c)] = c
+    return out
+
+
+def name_of(n) -> str:
+    """The name an identifier or `a.b.c` refers to (its last part); "" for anything else."""
+    if n is None:
+        return ""
+    if n.type in ("identifier", "shorthand_property_identifier"):
+        return _text(n)
+    if n.type == "member_expression":
+        p = n.child_by_field_name("property")
+        return _text(p) if p is not None else ""
+    return ""
+
+
+def is_env(n) -> bool:
+    """`process.env.X`"""
+    if n is None or n.type != "member_expression":
+        return False
+    obj = n.child_by_field_name("object")
+    return obj is not None and _text(obj) == "process.env"
+
+
+def qualified_strings(tree: tsl.Tree) -> dict[str, str]:
+    """`Obj.KEY` -> value for string members of declared objects and enums: `const Topics = { A: 'a' }`,
+    `enum Topics { A = 'a' }` (topic and queue constant maps)."""
+    out: dict[str, str] = {}
+    for n in _walk(tree.root_node):
+        if n.type == "variable_declarator":
+            name, val = n.child_by_field_name("name"), n.child_by_field_name("value")
+            while val is not None and val.type in ("as_expression", "satisfies_expression", "parenthesized_expression"):
+                val = val.named_children[0] if val.named_children else None
+            if name is None or val is None or name.type != "identifier" or val.type != "object":
+                continue
+            for c in val.named_children:
+                k, v = c.child_by_field_name("key"), c.child_by_field_name("value")
+                if c.type == "pair" and k is not None and v is not None and v.type == "string":
+                    out[f"{_text(name)}.{_text(k).strip(chr(39) + chr(34))}"] = _string_value(v)
+        elif n.type == "enum_declaration":
+            name, body = n.child_by_field_name("name"), n.child_by_field_name("body")
+            for c in body.named_children if body is not None else []:
+                k, v = c.child_by_field_name("name"), c.child_by_field_name("value")
+                if c.type == "enum_assignment" and k is not None and v is not None and v.type == "string":
+                    out[f"{_text(name)}.{_text(k).strip(chr(39) + chr(34))}"] = _string_value(v)
+    return out
+
+
+def local_objects(tree: tsl.Tree) -> dict:
+    """Names bound to an object literal in this file (`const params = { QueueUrl: … }`): name -> object node."""
+    out = {}
+    for n in _walk(tree.root_node):
+        if n.type == "variable_declarator":
+            name, val = n.child_by_field_name("name"), n.child_by_field_name("value")
+            if name is not None and val is not None and name.type == "identifier" and val.type == "object":
+                out[_text(name)] = val
+    return out
+
+
+@dataclass
+class DecoratedMethod:
+    cls: str
+    cls_decorators: dict[str, object]   # decorator name -> first argument node (or None)
+    method: str
+    decorators: dict[str, object]
+    line: int
+
+
+def _decorator(d) -> tuple[str, object] | None:
+    expr = next((c for c in d.named_children), None)
+    if expr is None:
+        return None
+    if expr.type == "identifier":
+        return _text(expr), None
+    if expr.type == "call_expression":
+        fn, args = expr.child_by_field_name("function"), expr.child_by_field_name("arguments")
+        named = [c for c in args.named_children] if args is not None else []
+        return (_text(fn).split(".")[-1] if fn is not None else ""), (named[0] if named else None)
+    return None
+
+
+def decorated_methods(tree: tsl.Tree) -> list[DecoratedMethod]:
+    """Class methods with decorators (NestJS `@Get(':id')`, `@EventPattern('x')`), with their class's decorators."""
+    out = []
+    for n in _walk(tree.root_node):
+        if n.type != "class_declaration":
+            continue
+        name = n.child_by_field_name("name")
+        holder = n.parent if n.parent is not None and n.parent.type == "export_statement" else n
+        cls_decs = dict(filter(None, (_decorator(d) for d in list(holder.children) + list(n.children) if d.type == "decorator")))
+        body = n.child_by_field_name("body")
+        pending: dict[str, object] = {}
+        for c in body.named_children if body is not None else []:
+            if c.type == "decorator":
+                if (d := _decorator(c)) is not None:
+                    pending[d[0]] = d[1]
+            elif c.type == "method_definition":
+                mname = c.child_by_field_name("name")
+                if pending and mname is not None:
+                    out.append(DecoratedMethod(_text(name) if name is not None else "", cls_decs, _text(mname), pending,
+                                               c.start_point[0] + 1))
+                pending = {}
+            else:
+                pending = {}
     return out

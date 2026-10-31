@@ -44,6 +44,17 @@ def project(p: str, user: User = Depends(current_user), s: Session = Depends(get
     return {"name": proj.name, "config_yaml": proj.config_yaml}
 
 
+@router.get("/projects/{p}/members")
+def members(p: str, user: User = Depends(current_user), s: Session = Depends(get_session)) -> list[dict]:
+    """Who works on the project, for the QA lead's "assign to" list."""
+    from kb_registry.models import Membership
+
+    proj = require_role(s, user, p, "viewer")
+    rows = s.query(Membership, User).join(User, User.id == Membership.user_id).filter(Membership.project_id == proj.id)
+    return sorted(({"email": u.email, "name": u.name, "role": m.role} for m, u in rows if not u.disabled),
+                  key=lambda m: m["email"])
+
+
 class ConfigIn(BaseModel):
     config_yaml: str
 
