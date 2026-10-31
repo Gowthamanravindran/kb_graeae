@@ -30,6 +30,11 @@ REST_CLIENT = {"axios", "ky", "got", "superagent", "node-fetch", "cross-fetch", 
 KAFKA = {"kafkajs", "@nestjs/microservices-kafka", "node-rdkafka", "@confluentinc/kafka-javascript"}
 SQS = {"@aws-sdk/client-sqs", "sqs-consumer", "sqs-producer"}
 RABBITMQ = {"amqplib", "amqp-connection-manager", "@golevelup/nestjs-rabbitmq"}
+RUBY_SERVER = {"gem:rails", "gem:railties", "gem:sinatra", "gem:grape", "gem:hanami", "gem:roda"}
+RUBY_CLIENT = {"gem:faraday", "gem:httparty", "gem:rest-client", "gem:http", "gem:typhoeus", "gem:excon"}
+RUBY_JOBS = {"gem:sidekiq", "gem:sidekiq-pro", "gem:sidekiq-ent", "gem:good_job", "gem:solid_queue", "gem:resque",
+             "gem:delayed_job_active_record", "gem:que"}
+RUBY_KAFKA = {"gem:karafka", "gem:waterdrop", "gem:ruby-kafka", "gem:racecar", "gem:rdkafka", "gem:phobos"}
 DEFAULT_IGNORE = ["**/*.svg", "**/__generated__/**"]
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -74,15 +79,23 @@ class Inspection(BaseModel):
 
 # ---------------------------------------------------------------- reading a repo
 
+_GEM = re.compile(r"""^\s*gem\s+['"]([^'"]+)['"]""", re.M)
+
+
 def _deps(pkg_dir: Path) -> set[str]:
+    """npm packages from package.json, and Ruby gems from a Gemfile (as `gem:<name>`)."""
+    out: set[str] = set()
     try:
         d = json.loads((pkg_dir / "package.json").read_text(encoding="utf-8"))
+        for k in ("dependencies", "devDependencies", "peerDependencies"):
+            if isinstance(d.get(k), dict):
+                out |= set(d[k])
     except (OSError, ValueError):
-        return set()
-    out: set[str] = set()
-    for k in ("dependencies", "devDependencies", "peerDependencies"):
-        if isinstance(d.get(k), dict):
-            out |= set(d[k])
+        pass
+    try:
+        out |= {f"gem:{g}" for g in _GEM.findall((pkg_dir / "Gemfile").read_text(encoding="utf-8"))}
+    except OSError:
+        pass
     return out
 
 
@@ -105,6 +118,11 @@ def _signals(deps: set[str]) -> set[str]:
     for name, libs in (("rest_server", REST_SERVER), ("rest_client", REST_CLIENT), ("kafka", KAFKA), ("sqs", SQS),
                        ("rabbitmq", RABBITMQ)):
         if deps & libs:
+            s.add(name)
+    if deps & RUBY_SERVER:   # a Ruby web app; Net::HTTP is always there, so it may call other services too
+        s |= {"backend", "rest_server", "rest_client"}
+    for name, gems in (("rest_client", RUBY_CLIENT), ("jobs_rb", RUBY_JOBS), ("kafka", RUBY_KAFKA)):
+        if deps & gems:
             s.add(name)
     return s
 
@@ -139,16 +157,22 @@ def _packages(root: Path) -> list[Path]:
             rel = p.relative_to(root).as_posix()
             if p.is_dir() and (p / "package.json").exists() and "node_modules" not in p.parts and fnmatch.fnmatch(rel, g):
                 out.append(p)
+    if not (root / "Gemfile").exists():
+        # Ruby apps in sub-folders (`backend/` with a Gemfile), and then their sibling JS apps too
+        rails = [p.parent for p in list(root.glob("*/Gemfile")) + list(root.glob("*/*/Gemfile"))
+                 if not {"node_modules", "vendor"} & set(p.parts)]
+        if rails:
+            out += rails + [p.parent for p in root.glob("*/package.json") if p.parent not in out]
     return sorted(set(out))
 
 
-_SRC = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte")
+_SRC = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte", ".rb")
 
 
 def _source_files(pkg: Path, cap: int = 20000) -> int:
     n = 0
     for p in pkg.rglob("*"):
-        if "node_modules" in p.parts or any(part.startswith(".") for part in p.relative_to(pkg).parts):
+        if {"node_modules", "vendor"} & set(p.parts) or any(part.startswith(".") for part in p.relative_to(pkg).parts):
             continue
         if p.suffix in _SRC:
             n += 1
@@ -165,7 +189,7 @@ def _clean_name(name: str) -> str:
 
 
 APP_SIGNALS = {"graphql_client", "graphql_server", "react_router", "bull", "backend", "rest_server", "kafka", "sqs",
-               "rabbitmq"}
+               "rabbitmq", "jobs_rb"}
 
 
 def _read(root: Path, source: str, kind: str, fallback_name: str) -> list[RepoInspection]:
@@ -275,6 +299,9 @@ def suggest_linkers(repos: list[RepoInspection]) -> list[LinkerConfig]:
     rest_clients = [r.name for r in repos if r.signals & {"rest_client", "frontend"} or r.role == "frontend"]
     if rest_servers and rest_clients:
         out.append(LinkerConfig(type="rest", from_=_one_or_many(rest_clients), to=_one_or_many(rest_servers)))
+    jobs = [r.name for r in repos if "jobs_rb" in r.signals]
+    if jobs:
+        out.append(LinkerConfig(type="sidekiq", in_=_one_or_many(jobs)))
     for broker in ("kafka", "sqs", "rabbitmq"):
         users = [r.name for r in repos if broker in r.signals]
         if users:

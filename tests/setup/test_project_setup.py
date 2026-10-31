@@ -185,3 +185,31 @@ def test_no_rest_link_without_a_server():
 
     web = RepoInspection(source="x", kind="local", name="web", role="frontend", signals={"frontend", "rest_client"})
     assert suggest_linkers([web]) == []
+
+
+def test_a_rails_app_is_detected_from_its_gemfile(tmp_path):
+    rails = tmp_path / "orders-api"
+    (rails / "config").mkdir(parents=True)
+    (rails / "config" / "routes.rb").write_text("Rails.application.routes.draw do\nend\n")
+    (rails / "Gemfile").write_text("source 'https://rubygems.org'\ngem 'rails', '~> 7.1'\ngem \"sidekiq\"\n"
+                                   "gem 'karafka', '>= 2'\n  gem 'faraday'\n# gem 'httparty'\n")
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "package.json").write_text('{"dependencies": {"react": "18", "axios": "1"}}')
+    got = inspect_repos([str(rails), str(web)], tmp_path / "home")
+    r = next(x for x in got.repos if x.name == "orders-api")
+    assert r.role == "backend" and {"rest_server", "rest_client", "jobs_rb", "kafka"} <= r.signals
+    links = {lk.type: lk for lk in got.linkers}
+    assert links["rest"].to == "orders-api" and set(links["rest"].froms()) == {"orders-api", "web"}
+    assert links["sidekiq"].in_ == "orders-api" and links["kafka"].in_ == "orders-api"
+
+
+def test_a_rails_app_in_a_subfolder_is_found(tmp_path):
+    root = tmp_path / "platform"
+    (root / "backend" / "config").mkdir(parents=True)
+    (root / "backend" / "config" / "routes.rb").write_text("")
+    (root / "backend" / "Gemfile").write_text("gem 'rails'\n")
+    (root / "frontend").mkdir()
+    (root / "frontend" / "package.json").write_text('{"dependencies": {"react": "18"}}')
+    got = inspect_repos([str(root)], tmp_path / "home")
+    assert {(r.name, r.path, r.role) for r in got.repos} >= {("backend", "backend", "backend")}

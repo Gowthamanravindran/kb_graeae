@@ -28,6 +28,7 @@ function describe(l: Link, names: (i: number[]) => string[]) {
   if (l.type === "graphql") return `GraphQL: ${list(l.from)} call${names(l.from).length === 1 ? "s" : ""} ${list(l.to)}`;
   if (l.type === "react-router") return `React Router screens in ${list(l.in)}`;
   if (l.type === "bull-queue") return `Bull queues in ${list(l.in)}`;
+  if (l.type === "sidekiq") return `Sidekiq / ActiveJob jobs ${names(l.in).length > 1 ? "across" : "in"} ${list(l.in)}`;
   if (l.type === "rest") return `REST: ${list(l.from)} call${names(l.from).length === 1 ? "s" : ""} ${list(l.to)}`;
   if (l.type === "kafka") return `Kafka topics ${names(l.in).length > 1 ? "across" : "in"} ${list(l.in)}`;
   if (l.type === "sqs") return `SQS queues ${names(l.in).length > 1 ? "across" : "in"} ${list(l.in)}`;

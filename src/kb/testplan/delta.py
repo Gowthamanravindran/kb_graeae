@@ -26,8 +26,38 @@ def tree_for(source: str, path: str):
     return _parser(not path.endswith(".ts")).parse(source.encode("utf-8"))
 
 
+RB_EXTS = (".rb", ".rake")
+CODE_EXTS = TS_EXTS + RB_EXTS   # languages whose decision points the inventory reads
+
+
+def _ruby_spans(source: str) -> list[tuple[str, int, int]]:
+    """Ruby classes and modules by their full name (`Api::V1::UsersController`) and methods as `.name`, matching
+    Graphify's node names."""
+    from kb.linkers import rb
+
+    out = []
+
+    def visit(node, prefix: str):
+        for c in node.named_children:
+            if c.type in ("class", "module"):
+                nm = rb.const_path(c.child_by_field_name("name"))
+                full = f"{prefix}::{nm}" if prefix and nm else nm or prefix
+                out.append((full, c.start_point[0] + 1, c.end_point[0] + 1))
+                visit(c, full)
+            elif c.type in ("method", "singleton_method"):
+                if (mn := c.child_by_field_name("name")) is not None:
+                    out.append((f".{mn.text.decode()}", c.start_point[0] + 1, c.end_point[0] + 1))
+            elif c.named_children:
+                visit(c, prefix)
+
+    visit(rb.parse_text(source).root_node, "")
+    return out
+
+
 def symbol_spans(source: str, path: str) -> list[tuple[str, int, int]]:
     """Top-level declarations as (name, first line, last line), 1-based — the extent Graphify's nodes lack."""
+    if path.endswith(RB_EXTS):
+        return _ruby_spans(source)
     if not path.endswith(TS_EXTS):
         return []
     out = []

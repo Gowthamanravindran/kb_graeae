@@ -22,11 +22,12 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from dataclasses import dataclass
 
 from kb.graph.model import CodeEdge, CodeNode
-from kb.linkers import ts
-from kb.linkers.base import LinkContext, ensure_file_node, ensure_node, handler_node, method_node, register_linker
+from kb.linkers import rails, rb, ts
+from kb.linkers.base import (LinkContext, SymbolIndex, ensure_file_node, ensure_node, handler_node, method_node,
+                             register_linker)
+from kb.linkers.web import ClientCall, Route, _join, score, segments  # noqa: F401  (re-exported for callers)
 
 METHODS = ("get", "post", "put", "patch", "delete", "head", "options", "all")
 NEST = {"Get": "GET", "Post": "POST", "Put": "PUT", "Patch": "PATCH", "Delete": "DELETE", "Head": "HEAD",
@@ -35,61 +36,7 @@ _SERVER = re.compile(r"(^app$|^server$|^api$|^r$|router$|routes$|^fastify$|app$)
 _SERVER_LIBS = re.compile(rb"""(from|require\()\s*['"](express|koa|@koa/router|koa-router|fastify|restify|@hapi/hapi)['"]""")
 _INLINE = ("arrow_function", "function_expression", "function")
 _CLIENT = re.compile(r"(axios|http|api|client|request|fetcher|ky|got|agent|instance)$")
-_PARAM = re.compile(r"^(:\w+\??|\{\w+\}|\*|\[\.{0,3}\w+\])$")
 
-
-def segments(path: str) -> list[str]:
-    """`https://h/api/users/${id}?x=1` -> ['api', 'users', '*']; params and substitutions become '*'."""
-    path = re.sub(r"^[a-z]+://[^/]+", "", path.strip())
-    path = re.split(r"[?#]", path, 1)[0]
-    segs = [s for s in path.split("/") if s]
-    out = ["*" if _PARAM.match(s) or "*" in s or "${" in s or s.startswith(":") else s for s in segs]
-    while out and out[0] == "*":   # `${BASE}/users`: the base URL is not part of the route
-        out.pop(0)
-    return out
-
-
-def score(route: list[str], call: list[str]) -> tuple[int, int] | None:
-    """When the route lines up with the end of the call's path: (fixed segments that match, parameters that meet
-    parameters), compared in that order, so `/users/${id}` prefers `/users/:id` to `/users/me`. None if it can't."""
-    if not route or len(route) > len(call):
-        return None
-    fixed = params = 0
-    for r, c in zip(reversed(route), reversed(call)):
-        if r == "*" or c == "*":
-            params += r == c
-            continue
-        if r != c:
-            return None
-        fixed += 1
-    return (fixed, params) if fixed else None
-
-
-def _join(*parts: str) -> str:
-    return "/" + "/".join(p.strip("/") for p in parts if p and p.strip("/"))
-
-
-@dataclass
-class Route:
-    method: str
-    path: str
-    file: tuple[str, str]
-    line: int
-    handler: str = ""
-    nest: tuple[str, str, int] | None = None
-
-    @property
-    def name(self) -> str:
-        return f"{self.method} {self.path}"
-
-
-@dataclass
-class ClientCall:
-    method: str
-    path: str
-    file: tuple[str, str]
-    line: int
-    external: bool = False   # an absolute URL: when no route matches, it's an outside service (Stripe, Google…)
 
 
 @register_linker
@@ -105,10 +52,16 @@ class RestLinker:
                 for name, line in ts.top_level_names(tree):
                     defs.setdefault(name, []).append((rel, line))
                 routes += self.routes(tree, rel)
+            routes += rails.routes(ctx.checkouts[repo].root, repo, list(ctx.ignore))
         declared = {(r.file, r.line) for r in routes}   # a repo that both serves and calls: a route isn't a call
         for repo in ctx.config.froms():
             for rel, tree in self._files(ctx, repo):
                 calls += [c for c in self.calls(tree, rel) if (c.file, c.line) not in declared]
+            root = ctx.checkouts[repo].root
+            for path in rb.iter_source_files(root, list(ctx.ignore)):
+                if (tree := rb.parse(path)) is not None:
+                    rel = (repo, path.relative_to(root).as_posix())
+                    calls += [c for c in rails.http_calls(tree, rel) if (c.file, c.line) not in declared]
         return self.edges(ctx, routes, calls, defs)
 
     @staticmethod
@@ -175,7 +128,7 @@ class RestLinker:
                 if dec in m.decorators:
                     sub = ts.literal(m.decorators[dec]) if m.decorators[dec] is not None else ""
                     if sub is not None:
-                        out.append(Route(verb, _join(prefix, sub), rel, m.line, nest=(m.cls, m.method, m.line)))
+                        out.append(Route(verb, _join(prefix, sub), rel, m.line, ref=(rel, m.cls, m.method, m.line)))
         return out
 
     # ------------------------------------------------------------ client side
@@ -213,6 +166,7 @@ class RestLinker:
 
     def edges(self, ctx, routes: list[Route], calls: list[ClientCall], defs) -> list[CodeEdge]:
         g = ctx.graph
+        index = SymbolIndex(g)
         edges: list[CodeEdge] = []
         nodes: dict[tuple[str, str], str] = {}
         seen: set[tuple[str, str]] = set()
@@ -223,7 +177,7 @@ class RestLinker:
                 nodes[key] = ensure_node(g, CodeNode(id=f"{r.file[0]}:http:{r.name}", repo=r.file[0], kind="http_route",
                                                      name=r.name, file=r.file[1], line=r.line))
             nid = nodes[key]
-            dst = method_node(g, r.file, *r.nest) if r.nest else handler_node(g, defs, r.file, r.handler)
+            dst = method_node(g, r.ref[0], *r.ref[1:], index=index) if r.ref else handler_node(g, defs, r.file, r.handler)
             if (nid, dst) not in seen:
                 seen.add((nid, dst))
                 edges.append(CodeEdge(src=nid, dst=dst, kind="served_by", origin="linker", label=r.name))

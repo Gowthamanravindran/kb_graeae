@@ -72,6 +72,40 @@ it (kafkajs, amqplib…), so they aren't drawn twice; `client.emit` only counts 
 `@nestjs/microservices`, so socket.io isn't mistaken for a broker. `process.env.T || 'orders'` uses the setting,
 else the default, and `{ cmd: 'sum' }` patterns are matched as `cmd=sum`.
 
+### Ruby on Rails
+
+Rails apps are read alongside JavaScript/TypeScript ones, and link to them both ways:
+
+```yaml
+linkers:
+  - type: rest
+    from: [web, orders-api]           # a React app and a Rails app that calls other services
+    to: [orders-api, payments, inventory]
+  - type: sidekiq
+    in: [orders-api, worker]          # a job queued by one app and run by another links up
+  - type: kafka
+    in: [orders-api, notifications]   # Ruby and Node producers and consumers meet on the topic name
+```
+
+- **Routes** come from `config/routes.rb` (and `draw(:name)` files): `resources` / `resource` with `only:` and
+  `except:`, nesting, `member` / `collection` and `on:`, `namespace`, `scope`, `concern`s, and `get 'x', to:
+  'c#a'` style routes. Each route points at its controller action, so `GET /api/v1/users/:id` leads to
+  `Api::V1::UsersController#show`. Every Rails app in a repo (each folder with a `config/routes.rb`) is read.
+- **HTTP calls** from Ruby: Faraday, HTTParty (including `self.class.get` and `base_uri` classes), RestClient,
+  http.rb, Typhoeus, Excon and Net::HTTP. A path relative to a client's base URL (`conn.get('charges')`) is
+  matched when a service serves it, and otherwise left out rather than counted as unmatched.
+- **Jobs**: Sidekiq `perform_async` / `perform_in` / `perform_at` / `perform_bulk` and `Sidekiq::Client.push`, and
+  ActiveJob `perform_later` (also through `.set(…)`), lead to the job's `perform`. `perform_now` runs inline and
+  isn't counted.
+- **Kafka**: Karafka routes (`topic :orders do consumer OrdersConsumer end` → `#consume`), WaterDrop and
+  `Karafka.producer.produce_*`, ruby-kafka, Racecar (`subscribes_to` → `#process`) and rdkafka. Topic constants
+  (`Topics::ORDERS`) and `ENV['X']` / `ENV.fetch('X', …)` settings are resolved like their JavaScript equivalents.
+
+Add project reads a repo's `Gemfile`: Rails, Sinatra, Grape, Hanami or Roda make it a backend; Sidekiq (or GoodJob,
+Solid Queue, Resque…) suggests the jobs link; Karafka, WaterDrop, ruby-kafka, Racecar or rdkafka add it to Kafka.
+A Rails app in a sub-folder of a larger repo is found too. SQS and RabbitMQ from Ruby, and GraphQL served by
+graphql-ruby, aren't linked yet.
+
 Topic and queue names written as constants (`Topics.ORDER_CREATED`, from an object or enum) are looked up across all
 the listed repos, so a literal in one service meets a constant in another. A name held in a function parameter,
 `this.topic` or a config object isn't guessed: it counts as unmatched rather than risk a wrong line. In the Map's **Graph** view each kind has its own colour;

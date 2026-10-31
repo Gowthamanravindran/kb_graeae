@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kb.ingest.checkout import Checkout
-from kb.testplan.delta import TS_EXTS, GraphDelta, find_span, tree_for
+from kb.testplan.delta import CODE_EXTS, RB_EXTS, TS_EXTS, GraphDelta, find_span, tree_for
 from kb.testplan.diff import Hunk
 from kb.testplan.models import InventoryItem
 
@@ -77,7 +77,11 @@ def _walk(node):
 
 
 def extract_decisions(source: str, path: str, start: int, end: int) -> list[Decision]:
-    """Decision points whose first line is within [start, end] (1-based) of a JS/TS file."""
+    """Decision points whose first line is within [start, end] (1-based) of a JS/TS or Ruby file."""
+    if path.endswith(RB_EXTS):
+        from kb.testplan.inventory_rb import extract
+
+        return extract(source, start, end)
     if not path.endswith(TS_EXTS):
         return []
     root = tree_for(source, path).root_node
@@ -230,7 +234,7 @@ def inventory(base_cos: dict[str, Checkout], head_cos: dict[str, Checkout], delt
     for (repo, bfile, hfile, full), idx in targets.items():
         name = full.split("@")[0] if full else None
         bsrc, hsrc = _read(base_cos, repo, bfile), _read(head_cos, repo, hfile)
-        ts_file = hfile.endswith(TS_EXTS) or bfile.endswith(TS_EXTS)
+        ts_file = hfile.endswith(CODE_EXTS) or bfile.endswith(CODE_EXTS)
         if not ts_file:
             if name:
                 d = Decision("code", f"{name} changed", ["changed"], hunks[idx[0]].new_start if idx else 1)

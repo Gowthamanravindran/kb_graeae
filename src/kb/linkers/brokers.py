@@ -35,8 +35,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kb.graph.model import CodeEdge, CodeNode
-from kb.linkers import ts
-from kb.linkers.base import LinkContext, ensure_file_node, ensure_node, handler_node, method_node, register_linker
+from kb.linkers import rb, ts
+from kb.linkers.base import (LinkContext, SymbolIndex, ensure_file_node, ensure_node, handler_node, method_node,
+                             register_linker)
 
 File = tuple[str, str]  # (repo, path)
 
@@ -50,6 +51,7 @@ class Hit:
     line: int
     handler: str = ""        # a handler function's name
     method: tuple[str, str, int] | None = None   # (class, method, line) for a decorated handler
+    ref: tuple[File, str, str, int] | None = None  # a handler method in another file: (file, class, method, line)
 
 
 @dataclass
@@ -57,6 +59,8 @@ class Scan:
     hits: list[Hit] = field(default_factory=list)
     defs: dict = field(default_factory=dict)
     qualified: dict[str, set[str]] = field(default_factory=dict)  # `Obj.KEY` -> values, across all `in` repos
+    rb_consts: dict[str, set[str]] = field(default_factory=dict)  # Ruby `Topics::ORDERS` -> values
+    rb_classes: dict[str, list] = field(default_factory=dict)     # Ruby class short name -> [(file, RbClass)]
 
 
 _CONST = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
@@ -136,7 +140,7 @@ class BrokerLinker:
     libs: set[str] = set()   # packages that mean a repo talks to this broker (for transport-neutral NestJS patterns)
 
     def run(self, ctx: LinkContext) -> list[CodeEdge]:
-        files = []
+        files, rb_files = [], []
         scan = Scan()
         self.uses: dict[str, bool] = {}
         for repo in ctx.config.ins():
@@ -153,9 +157,35 @@ class BrokerLinker:
                     scan.defs.setdefault(name, []).append((rel, line))
                 for k, v in ts.qualified_strings(tree).items():
                     scan.qualified.setdefault(k, set()).add(v)
+            for path in rb.iter_source_files(root, list(ctx.ignore)):
+                tree = rb.parse(path)
+                if tree is None:
+                    continue
+                rel = (repo, path.relative_to(root).as_posix())
+                rb_files.append((rel, tree))
+                for k, v in rb.constants(tree).items():
+                    scan.rb_consts.setdefault(k, set()).add(v)
+                for k in rb.classes(tree):
+                    scan.rb_classes.setdefault(k.short, []).append((rel, k))
         for rel, tree in files:
             self.scan(tree, rel, Keys(scan.qualified, ts.string_constants(tree)), scan.hits)
+        for rel, tree in rb_files:
+            self.scan_ruby(tree, rel, RbKeys(scan.rb_consts), scan)
         return self.edges(ctx, scan)
+
+    def scan_ruby(self, tree, rel: File, keys: RbKeys, scan: Scan) -> None:
+        """Ruby senders and receivers; brokers without Ruby support find none."""
+
+    def ruby_handler(self, scan: Scan, rel: File, const, methods: tuple[str, ...]) -> tuple | None:
+        """(file, class, method, line) of a consumer class's handler method, preferring this repo's class."""
+        name = rb.const_path(const).rsplit("::", 1)[-1]
+        found = [(f, k) for f, k in scan.rb_classes.get(name, []) if any(m in k.methods for m in methods)]
+        found = [d for d in found if d[0][0] == rel[0]] or found
+        if not found:
+            return None
+        f, k = found[0]
+        m = next(m for m in methods if m in k.methods)
+        return (f, k.name, m, k.methods[m])
 
     def scan(self, tree, rel: File, keys: Keys, hits: list[Hit]) -> None:  # pragma: no cover - per broker
         raise NotImplementedError
@@ -184,6 +214,7 @@ class BrokerLinker:
 
     def edges(self, ctx: LinkContext, scan: Scan) -> list[CodeEdge]:
         g = ctx.graph
+        index = SymbolIndex(g)
         first: dict[str, tuple[File, int]] = {}
         sends: dict[str, set[File]] = {}
         recvs: dict[str, list[Hit]] = {}
@@ -215,7 +246,9 @@ class BrokerLinker:
                 edges.append(CodeEdge(src=ensure_file_node(g, *f), dst=tid, kind="publishes", origin="linker", label=key))
             seen = set()
             for h in recvs.get(key, []):
-                dst = method_node(g, h.file, *h.method) if h.method else handler_node(g, scan.defs, h.file, h.handler)
+                dst = method_node(g, h.ref[0], *h.ref[1:], index=index) if h.ref else \
+                    method_node(g, h.file, *h.method, index=index) if h.method else \
+                    handler_node(g, scan.defs, h.file, h.handler)
                 if dst not in seen:
                     seen.add(dst)
                     edges.append(CodeEdge(src=tid, dst=dst, kind="consumed_by", origin="linker", label=key))
@@ -225,8 +258,75 @@ class BrokerLinker:
         return edges
 
 
+class RbKeys:
+    """Ruby topic names: a string or symbol; a constant declared in any `in` repo (`Topics::ORDERS`, also named from
+    inside its module as `ORDERS`); `ENV['X']` / `ENV.fetch('X', …)` as X. Anything else stays unresolved."""
+
+    def __init__(self, consts: dict[str, set[str]]):
+        self.consts = consts
+        self.by_last: dict[str, set[str]] = {}
+        for k, vs in consts.items():
+            self.by_last.setdefault(k.rsplit("::", 1)[-1], set()).update(vs)
+
+    def __call__(self, n) -> tuple[str | None, str]:
+        if n is None:
+            return None, "?"
+        lit = rb.literal(n)
+        if lit is not None:
+            return (lit, lit) if "*" not in lit else (None, "interpolated")
+        env = rb.env_name(n)
+        if env:
+            return env, env
+        path = rb.const_path(n)
+        if path:
+            vals = self.consts.get(path) or (self.by_last.get(path) if "::" not in path else None) or set()
+            if len(vals) == 1:
+                return next(iter(vals)), path
+            return path, path   # declared outside these repos: both sides must name it the same
+        return None, rb._text(n) if n.type in ("identifier", "instance_variable", "constant") else "?"
+
+
 def _handler_name(n) -> str:
     return ts.name_of(n) if n is not None and n.type in ("identifier", "member_expression") else ""
+
+
+KAFKA_SEND = {"produce", "produce_sync", "produce_async", "deliver_message", "deliver_message_async"}
+KAFKA_SEND_MANY = {"produce_many_sync", "produce_many_async"}
+
+
+def _kafka_ruby(self, tree, rel, keys, scan) -> None:
+    """Karafka routing (`topic :orders do consumer OrdersConsumer end` -> `#consume`) and WaterDrop /
+    `Karafka.producer.produce_*`; ruby-kafka (`deliver_message(…, topic:)`, `consumer.subscribe('t')`), Racecar
+    (`subscribes_to 't'` -> `#process` / `#process_batch`, `produce(…, topic:)`), rdkafka (`produce(topic:)`)."""
+    hits = scan.hits
+    for c in rb.calls(tree):
+        if c.name in KAFKA_SEND and "topic" in c.kwargs:
+            key, ident = keys(c.kwargs["topic"])
+            hits.append(Hit(True, key, ident, rel, c.line))
+        elif c.name in KAFKA_SEND_MANY and c.args and c.args[0].type == "array":
+            for h in c.args[0].named_children:
+                for p in h.named_children if h.type == "hash" else []:
+                    k, v = p.child_by_field_name("key"), p.child_by_field_name("value")
+                    if p.type == "pair" and k is not None and rb.literal(k) == "topic":
+                        key, ident = keys(v)
+                        hits.append(Hit(True, key, ident, rel, c.line))
+        elif c.name == "topic" and not c.receiver and c.args and c.block is not None:
+            consumer = next((s for s in rb.statements(c.block) if s.name == "consumer" and s.args), None)
+            if consumer is not None:
+                key, ident = keys(c.args[0])
+                ref = self.ruby_handler(scan, rel, consumer.args[0], ("consume",))
+                hits.append(Hit(False, key, ident, rel, c.line, ref=ref))
+        elif c.name == "subscribe" and "consumer" in c.receiver.lower() and c.args:
+            key, ident = keys(c.args[0])
+            hits.append(Hit(False, key, ident, rel, c.line))
+    for k in rb.classes(tree):
+        for s in k.calls:
+            if s.name == "subscribes_to":
+                handler = next((m for m in ("process", "process_batch") if m in k.methods), None)
+                for a in s.args:
+                    key, ident = keys(a)
+                    hits.append(Hit(False, key, ident, rel, s.line,
+                                    ref=(rel, k.name, handler, k.methods[handler]) if handler else None))
 
 
 @register_linker
@@ -234,6 +334,7 @@ class KafkaLinker(BrokerLinker):
     type = "kafka"
     broker = "kafka"
     libs = {"kafkajs", "node-rdkafka", "@confluentinc/kafka-javascript"}
+    scan_ruby = _kafka_ruby
 
     def scan(self, tree, rel, keys, hits):
         calls = ts.all_calls(tree)
